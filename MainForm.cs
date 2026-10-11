@@ -1,13 +1,10 @@
 using System.Drawing.Drawing2D;
-using System.Drawing.Text;
-using System.Reflection;
 using NAudio.Wave;
 
 namespace Heat5Music;
 
 public sealed class MainForm : Form
 {
-    const int HeaderHeight = 110;
     readonly ListView _songs;
     readonly TextBox _title;
     readonly TextBox _artist;
@@ -20,7 +17,6 @@ public sealed class MainForm : Form
     bool _paused;
     readonly List<string> _files = new List<string>();
     readonly Icon _icon;
-    readonly Image? _logo;
     Panel? _header;
     Panel? _locateRow;
     bool _filling;
@@ -30,19 +26,25 @@ public sealed class MainForm : Form
     public MainForm()
     {
         Text = "NASCAR Heat 5 Music Editor";
-        StartPosition = FormStartPosition.CenterScreen;
+        StartPosition = FormStartPosition.Manual;
         ClientSize = new Size(980, 700);
         MinimumSize = new Size(860, 620);
         BackColor = Theme.Asphalt;
         ForeColor = Theme.White;
         DoubleBuffered = true;
         Font = new Font("Segoe UI", 9.5f);
-        _logo = LoadLogo();
-        _icon = MakeIcon();
+        _icon = MusicBanner.AppIcon();
         Icon = _icon;
 
-        _header = new Panel { Dock = DockStyle.Top, Height = HeaderHeight, BackColor = Theme.Asphalt };
-        _header.Paint += (_, e) => DrawHeader(e.Graphics, _header.Width);
+        _header = new Panel { Dock = DockStyle.Top, Height = MusicBanner.HeaderHeight(700), BackColor = Color.Black };
+        _header.Paint += (_, e) => MusicBanner.Draw(e.Graphics, _header.ClientRectangle);
+        Resize += (_, __) =>
+        {
+            if (_header != null)
+            {
+                _header.Height = MusicBanner.HeaderHeight(ClientSize.Height);
+            }
+        };
 
         var note = new Panel
         {
@@ -132,30 +134,31 @@ public sealed class MainForm : Form
         _artist = Field(600, 6, 340);
         _title.TextChanged += (_, __) => StoreSelected();
         _artist.TextChanged += (_, __) => StoreSelected();
-        var choose = MakeButton("CHOOSE MP3", Color.FromArgb(24, 24, 26), Theme.Yellow, new Point(16, 42), new Size(150, 36), 2);
-        choose.FlatAppearance.BorderColor = Theme.Yellow;
-        var clear = MakeButton("CLEAR", Color.FromArgb(24, 24, 26), Theme.Yellow, new Point(176, 42), new Size(120, 36), 2);
-        clear.FlatAppearance.BorderColor = Theme.Yellow;
-        var apply = MakeButton("APPLY", Theme.Red, Theme.White, new Point(306, 42), new Size(150, 36), 0);
-        var restore = MakeButton("RESTORE", Color.FromArgb(24, 24, 26), Theme.Yellow, new Point(466, 42), new Size(150, 36), 2);
-        restore.FlatAppearance.BorderColor = Theme.Yellow;
+        var choose = Transport("Choose mp3", TransportGlyph.Choose, new Point(16, 42));
+        var clear = Transport("Clear", TransportGlyph.Clear, new Point(76, 42));
+        var apply = Transport("Apply", TransportGlyph.Apply, new Point(136, 42));
+        apply.BackColor = Theme.Red;
+        apply.ForeColor = Theme.White;
+        var restore = Transport("Restore", TransportGlyph.Restore, new Point(196, 42));
         choose.Click += (_, __) => ChooseFiles();
         clear.Click += (_, __) => ClearSelected();
         apply.Click += (_, __) => Apply();
         restore.Click += (_, __) => Restore();
-        var play = MakeButton("PLAY", Color.FromArgb(24, 24, 26), Theme.Yellow, new Point(16, 84), new Size(110, 36), 2);
-        play.FlatAppearance.BorderColor = Theme.Yellow;
-        var pause = MakeButton("PAUSE", Color.FromArgb(24, 24, 26), Theme.Yellow, new Point(136, 84), new Size(110, 36), 2);
-        pause.FlatAppearance.BorderColor = Theme.Yellow;
-        var stop = MakeButton("STOP", Color.FromArgb(24, 24, 26), Theme.Yellow, new Point(256, 84), new Size(110, 36), 2);
-        stop.FlatAppearance.BorderColor = Theme.Yellow;
+        var tips = new ToolTip();
+        tips.SetToolTip(choose, "Choose mp3");
+        tips.SetToolTip(clear, "Clear");
+        tips.SetToolTip(apply, "Apply");
+        tips.SetToolTip(restore, "Restore");
+        var play = Transport("Play", TransportGlyph.Play, new Point(16, 84));
+        var pause = Transport("Pause", TransportGlyph.Pause, new Point(80, 84));
+        var stop = Transport("Stop", TransportGlyph.Stop, new Point(144, 84));
         play.Click += (_, __) => PlaySelected();
         pause.Click += (_, __) => PauseAudio();
         stop.Click += (_, __) => StopAudio();
         _playLabel = new Label
         {
-            Location = new Point(380, 90),
-            Size = new Size(560, 24),
+            Location = new Point(210, 90),
+            Size = new Size(730, 24),
             ForeColor = Theme.Mute,
             BackColor = Theme.Asphalt,
             AutoEllipsis = true
@@ -173,22 +176,37 @@ public sealed class MainForm : Form
 
         _status = new Label
         {
-            Dock = DockStyle.Bottom,
-            Height = 36,
+            Dock = DockStyle.Fill,
             ForeColor = Theme.Mute,
             BackColor = Theme.Asphalt,
             Padding = new Padding(16, 8, 12, 0),
             Text = "Locate the NASCAR Heat 5 folder."
         };
+        var foot = new Panel { Dock = DockStyle.Bottom, Height = 36, BackColor = Theme.Asphalt };
+        var help = new MusicHelpMark();
+        help.Click += (_, __) => MusicManual.Open(this);
+        foot.Controls.Add(_status);
+        foot.Controls.Add(help);
 
         Controls.Add(_songs);
         Controls.Add(edit);
-        Controls.Add(_status);
+        Controls.Add(foot);
         Controls.Add(note);
         Controls.Add(_locateRow);
         Controls.Add(_header);
         Shown += (_, __) =>
         {
+            var area = Program.ScreenArea ?? Screen.FromHandle(Handle).WorkingArea;
+            var clientW = Math.Min(ClientSize.Width, Math.Max(640, area.Width - 24));
+            var clientH = Math.Min(ClientSize.Height, Math.Max(480, area.Height - 48));
+            ClientSize = new Size(clientW, clientH);
+            if (_header != null)
+            {
+                _header.Height = MusicBanner.HeaderHeight(ClientSize.Height);
+            }
+
+            Left = area.Left + Math.Max(0, (area.Width - Width) / 2);
+            Top = area.Top + Math.Max(0, (area.Height - Height) / 2);
             if (_hosted)
             {
                 return;
@@ -256,35 +274,6 @@ public sealed class MainForm : Form
 
         WriteSaved(root);
         Reload();
-    }
-
-    void DrawHeader(Graphics g, int width)
-    {
-        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-        Theme.FillCheckered(g, new Rectangle(0, 0, width, HeaderHeight), 10);
-        using (var shade = new SolidBrush(Color.FromArgb(150, 0, 0, 0)))
-        {
-            g.FillRectangle(shade, 0, 0, width, HeaderHeight);
-        }
-
-        var logoDest = new Rectangle(14, 14, 248, 81);
-        if (_logo != null)
-        {
-            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            g.DrawImage(_logo, logoDest);
-        }
-
-        using (var titleFont = new Font("Segoe UI", 15.5f, FontStyle.Bold))
-        using (var format = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center })
-        {
-            var titleRect = _logo != null
-                ? new RectangleF(270, 14, Math.Max(40, width - 284), 81)
-                : new RectangleF(20, 14, width - 40, 81);
-            Theme.DrawOutlinedText(g, "Music Editor", titleFont, titleRect, format);
-        }
-
-        Theme.DrawHeaderStripes(g, HeaderHeight, width);
     }
 
     void BrowseGame()
@@ -563,57 +552,28 @@ public sealed class MainForm : Form
 
     static Button MakeButton(string text, Color back, Color fore, Point loc, Size size, int border)
     {
-        var button = new Button
+        return new PressButton
         {
             Text = text,
             Location = loc,
             Size = size,
             BackColor = back,
-            ForeColor = fore,
-            FlatStyle = FlatStyle.Flat,
-            Font = new Font("Impact", 16, FontStyle.Regular, GraphicsUnit.Pixel),
-            Cursor = Cursors.Hand,
-            UseVisualStyleBackColor = false
+            ForeColor = fore
         };
-        button.FlatAppearance.BorderSize = border;
-        return button;
     }
 
-    static Image? LoadLogo()
+    static TransportButton Transport(string name, TransportGlyph glyph, Point loc)
     {
-        var assembly = Assembly.GetExecutingAssembly();
-        using var stream = assembly.GetManifestResourceStream("Heat5Music.heat5-logo.png");
-        if (stream == null)
+        return new TransportButton
         {
-            return null;
-        }
-
-        using var copy = new MemoryStream();
-        stream.CopyTo(copy);
-        copy.Position = 0;
-        using var loaded = Image.FromStream(copy);
-        return new Bitmap(loaded);
-    }
-
-    static Icon MakeIcon()
-    {
-        var bmp = new Bitmap(32, 32);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            g.SmoothingMode = SmoothingMode.None;
-            Theme.FillCheckered(g, new Rectangle(0, 0, 32, 32), 8);
-            using (var blue = new SolidBrush(Theme.Blue))
-            {
-                g.FillRectangle(blue, 0, 0, 4, 32);
-            }
-
-            using (var yellow = new Pen(Theme.Yellow, 3))
-            {
-                g.DrawLine(yellow, 8, 22, 24, 10);
-            }
-        }
-
-        return Icon.FromHandle(bmp.GetHicon());
+            Text = "",
+            AccessibleName = name,
+            Glyph = glyph,
+            Location = loc,
+            Size = new Size(52, 36),
+            BackColor = Color.FromArgb(24, 24, 26),
+            ForeColor = Theme.Yellow
+        };
     }
 
     static string SavedFile()
@@ -796,7 +756,6 @@ public sealed class MainForm : Form
         {
             StopAudio();
             _icon.Dispose();
-            _logo?.Dispose();
         }
 
         base.Dispose(disposing);
