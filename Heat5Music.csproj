@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Heat5Music</RootNamespace>
+    <AssemblyName>NASCAR Heat 5 Music Editor</AssemblyName>
+    <Product>NASCAR Heat 5 Music Editor</Product>
+    <AssemblyTitle>NASCAR Heat 5 Music Editor</AssemblyTitle>
+    <Company>NH5 Multiplayer Revival</Company>
+    <Authors>NH5 Multiplayer Revival</Authors>
+    <Copyright>Copyright (c) 2026</Copyright>
+    <Description>Replace NASCAR Heat 5 menu music and the title and artist Heat shows.</Description>
+    <Version>1.0.0</Version>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+    <DebugType>embedded</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\heat5-logo.png" LogicalName="Heat5Music.heat5-logo.png" />
+  </ItemGroup>
+</Project>
