@@ -1,0 +1,866 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
+
+namespace Heat5Music
+{
+    internal sealed class HeatSong
+    {
+        public int Index;
+        public int SampleIndex;
+        public string Title = "";
+        public string Artist = "";
+        public int Samples;
+    }
+
+    internal static class MusicBank
+    {
+        private const int HeaderBytes = 60;
+        private const int MaxSeconds = 15 * 60;
+
+        public static string StreamsPath(string root)
+        {
+            return Path.Combine(root, "NASCARHeat5_Data", "StreamingAssets", "PC", "FMOD", "Music Bank.streams.bank");
+        }
+
+        public static IReadOnlyList<HeatSong> ReadSongs(string root)
+        {
+            var streams = StreamsPath(root);
+            if (!File.Exists(streams))
+            {
+                throw new InvalidOperationException("Music bank was not found in that Heat 5 folder.");
+            }
+
+            var metaPath = MetaPath(root);
+            List<(string Title, string Artist)> titles;
+            try
+            {
+                titles = MusicMeta.Read(metaPath);
+            }
+            catch (Exception)
+            {
+                titles = new List<(string Title, string Artist)>();
+            }
+
+            ParsedBank? parsed = null;
+            try
+            {
+                parsed = Parse(File.ReadAllBytes(streams));
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            int[]? map = null;
+            try
+            {
+                map = MusicMeta.SampleMap(metaPath, streams);
+            }
+            catch (Exception)
+            {
+            }
+
+            var useNames = parsed != null
+                && parsed.Samples.Count > 0
+                && (parsed.Mode != 16 || titles.Count != parsed.Samples.Count);
+            if (useNames && parsed != null)
+            {
+                var named = new List<HeatSong>();
+                for (var i = 0; i < parsed.Samples.Count; i++)
+                {
+                    var name = parsed.Samples[i].Name;
+                    named.Add(new HeatSong
+                    {
+                        Index = i,
+                        SampleIndex = i,
+                        Title = string.IsNullOrWhiteSpace(name) ? "Song " + (i + 1) : name,
+                        Artist = "",
+                        Samples = parsed.Samples[i].Samples
+                    });
+                }
+
+                return named;
+            }
+
+            var sampleCount = parsed == null ? 0 : parsed.Samples.Count;
+            var rows = titles.Count > 0 ? titles.Count : sampleCount;
+            if (rows == 0)
+            {
+                throw new InvalidOperationException("Music bank was not recognized.");
+            }
+
+            var paired = Pair(rows, sampleCount, map);
+            var songs = new List<HeatSong>();
+            for (var i = 0; i < rows; i++)
+            {
+                var sample = paired[i];
+                var title = i < titles.Count ? titles[i].Title : "";
+                songs.Add(new HeatSong
+                {
+                    Index = i,
+                    SampleIndex = sample,
+                    Title = string.IsNullOrWhiteSpace(title) ? "Song " + (i + 1) : title,
+                    Artist = i < titles.Count ? titles[i].Artist : "",
+                    Samples = sample >= 0 && parsed != null ? parsed.Samples[sample].Samples : 0
+                });
+            }
+
+            return songs;
+        }
+
+        public static void Apply(string root, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists)
+        {
+            EnsureClosed(root);
+            var streams = StreamsPath(root);
+            if (!File.Exists(streams))
+            {
+                throw new InvalidOperationException("Music bank was not found in that Heat 5 folder.");
+            }
+
+            var any = false;
+            for (var i = 0; i < files.Count; i++)
+            {
+                if (!string.IsNullOrWhiteSpace(files[i]))
+                {
+                    any = true;
+                    break;
+                }
+            }
+
+            if (!any)
+            {
+                throw new InvalidOperationException("Choose an mp3 for at least one song.");
+            }
+
+            var metaPath = MetaPath(root);
+            var bak = streams + ".nh5music.bak";
+            var metaBak = metaPath + ".nh5music.bak";
+            // First APPLY copies the user's current music banks. They may already be modded.
+            // Later APPLY and RESTORE use that copy. Do not replace it with a stock bank.
+            if (!File.Exists(bak))
+            {
+                File.Copy(streams, bak, false);
+            }
+
+            if (!File.Exists(metaBak))
+            {
+                File.Copy(metaPath, metaBak, false);
+            }
+
+            var bank = File.ReadAllBytes(bak);
+            var parsed = Parse(bank);
+            if (parsed.Mode != 16)
+            {
+                ApplyVorbis(root, streams, metaPath, metaBak, bank, parsed, files, titles, artists);
+                return;
+            }
+            int[]? map = null;
+            try
+            {
+                map = MusicMeta.SampleMap(metaBak, bak);
+            }
+            catch (Exception)
+            {
+            }
+
+            var paired = Pair(files.Count, parsed.Samples.Count, map);
+            if (parsed.Samples.Count == 0)
+            {
+                throw new InvalidOperationException("Music bank was not recognized.");
+            }
+
+            var pieces = new byte[parsed.Samples.Count][];
+            var counts = new int[parsed.Samples.Count];
+            var newTitles = new string?[files.Count];
+            var newArtists = new string?[files.Count];
+            for (var i = 0; i < parsed.Samples.Count; i++)
+            {
+                var sample = parsed.Samples[i];
+                pieces[i] = new byte[sample.Length];
+                Buffer.BlockCopy(bank, sample.DataAt, pieces[i], 0, sample.Length);
+                counts[i] = sample.Samples;
+            }
+
+            for (var i = 0; i < files.Count; i++)
+            {
+                var mp3 = files[i];
+                if (string.IsNullOrWhiteSpace(mp3))
+                {
+                    continue;
+                }
+
+                if (!File.Exists(mp3))
+                {
+                    throw new InvalidOperationException("Missing file: " + mp3);
+                }
+
+                var pcm = ReadPcm(mp3);
+                var sample = paired[i];
+                if (sample < 0)
+                {
+                    throw new InvalidOperationException("That song has no audio to replace.");
+                }
+
+                counts[sample] = pcm.Length / 2;
+                pieces[sample] = FadpcmCodec.EncodeStereo(pcm);
+                if (i < titles.Count)
+                {
+                    newTitles[i] = titles[i];
+                }
+
+                if (i < artists.Count)
+                {
+                    newArtists[i] = artists[i];
+                }
+            }
+
+            var rebuilt = Rebuild(bank, parsed, pieces, counts);
+            Parse(rebuilt);
+            var meta = MusicMeta.Rewrite(File.ReadAllBytes(metaBak), newTitles, newArtists);
+            Save(rebuilt, streams);
+            Save(meta, metaPath);
+        }
+
+        private static void ApplyVorbis(string root, string streams, string metaPath, string metaBak, byte[] bank, ParsedBank parsed, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists)
+        {
+            var count = parsed.Samples.Count;
+            var pieces = new byte[count][];
+            var counts = new int[count];
+            var names = new string[count];
+            var dataSize = BitConverter.ToInt32(bank, parsed.DataSizeAt);
+            var fsbLength = HeaderBytes + parsed.SampleHeaderSize + parsed.NameTableSize + dataSize;
+            var keep = new List<int>();
+            var keepRates = new List<int>();
+            for (var i = 0; i < count; i++)
+            {
+                var mp3 = i < files.Count ? files[i] : null;
+                if (string.IsNullOrWhiteSpace(mp3))
+                {
+                    keep.Add(i);
+                    keepRates.Add(SourceRate(parsed.Samples[i].Raw));
+                }
+                else if (!File.Exists(mp3))
+                {
+                    throw new InvalidOperationException("Missing file: " + mp3);
+                }
+            }
+
+            var kept = keep.Count == 0
+                ? Array.Empty<short[]>()
+                : FmodPcm.ReadAll(root, bank, parsed.FsbAt, fsbLength, keep.ToArray(), keepRates.ToArray());
+            var keptAt = 0;
+            for (var i = 0; i < count; i++)
+            {
+                var mp3 = i < files.Count ? files[i] : null;
+                var pcm = string.IsNullOrWhiteSpace(mp3) ? kept[keptAt++] : ReadPcm(mp3);
+                counts[i] = pcm.Length / 2;
+                pieces[i] = FadpcmCodec.EncodeStereo(pcm);
+                var edited = i < titles.Count ? titles[i] : "";
+                names[i] = string.IsNullOrWhiteSpace(edited) ? parsed.Samples[i].Name : edited;
+            }
+
+            var events = MusicMeta.Read(metaBak);
+            int[]? eventMap = null;
+            try
+            {
+                eventMap = MusicMeta.SampleMap(metaBak, streams + ".nh5music.bak");
+            }
+            catch (Exception)
+            {
+            }
+
+            var mapOk = eventMap != null && eventMap.Length == events.Count;
+            if (mapOk)
+            {
+                for (var i = 0; i < eventMap!.Length; i++)
+                {
+                    if (eventMap[i] < 0 || eventMap[i] >= count)
+                    {
+                        mapOk = false;
+                        break;
+                    }
+                }
+            }
+
+            var newTitles = new string?[Math.Max(files.Count, events.Count)];
+            var newArtists = new string?[newTitles.Length];
+            for (var i = 0; i < events.Count; i++)
+            {
+                var sample = mapOk ? eventMap![i] : (i < count ? i : -1);
+                if (sample >= 0)
+                {
+                    newTitles[i] = names[sample];
+                }
+            }
+
+            var fsb = BuildFadpcm(bank, parsed, pieces, counts, names);
+            var rebuilt = SpliceFsb(bank, parsed, fsb);
+            Parse(rebuilt);
+            var meta = MusicMeta.Rewrite(File.ReadAllBytes(metaBak), newTitles, newArtists);
+            Save(rebuilt, streams);
+            Save(meta, metaPath);
+        }
+
+        private static int SourceRate(ulong raw)
+        {
+            var index = (int)((raw >> 1) & 15);
+            int[] rates = { 0, 8000, 11000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000, 192000, 0, 0 };
+            var rate = rates[index];
+            return rate == 0 ? 48000 : rate;
+        }
+
+        private static byte[] BuildFadpcm(byte[] bank, ParsedBank parsed, byte[][] pieces, int[] counts, string[] names)
+        {
+            var count = pieces.Length;
+            var strings = new List<byte>();
+            var offsets = new int[count];
+            for (var i = 0; i < count; i++)
+            {
+                offsets[i] = count * 4 + strings.Count;
+                var text = Encoding.UTF8.GetBytes(names[i] ?? "");
+                strings.AddRange(text);
+                strings.Add(0);
+            }
+
+            var nameBytes = new byte[count * 4 + strings.Count];
+            for (var i = 0; i < count; i++)
+            {
+                BitConverter.GetBytes(offsets[i]).CopyTo(nameBytes, i * 4);
+            }
+
+            strings.CopyTo(nameBytes, count * 4);
+            var headerSize = count * 8;
+            var tail = (HeaderBytes + headerSize + nameBytes.Length) & 15;
+            if (tail != 0)
+            {
+                headerSize += 16 - tail;
+            }
+
+            var dataSize = 0;
+            for (var i = 0; i < pieces.Length; i++)
+            {
+                dataSize += pieces[i].Length;
+            }
+
+            var fsb = new byte[HeaderBytes + headerSize + nameBytes.Length + dataSize];
+            Buffer.BlockCopy(bank, parsed.FsbAt, fsb, 0, HeaderBytes);
+            Encoding.ASCII.GetBytes("FSB5").CopyTo(fsb, 0);
+            BitConverter.GetBytes(1).CopyTo(fsb, 4);
+            BitConverter.GetBytes(count).CopyTo(fsb, 8);
+            BitConverter.GetBytes(headerSize).CopyTo(fsb, 12);
+            BitConverter.GetBytes(nameBytes.Length).CopyTo(fsb, 16);
+            BitConverter.GetBytes(dataSize).CopyTo(fsb, 20);
+            BitConverter.GetBytes(16).CopyTo(fsb, 24);
+            nameBytes.CopyTo(fsb, HeaderBytes + headerSize);
+            var cursor = 0;
+            for (var i = 0; i < count; i++)
+            {
+                Buffer.BlockCopy(pieces[i], 0, fsb, HeaderBytes + headerSize + nameBytes.Length + cursor, pieces[i].Length);
+                ulong raw = 0;
+                raw |= 9UL << 1;
+                raw |= 1UL << 5;
+                raw |= ((ulong)counts[i] & 0x3FFFFFFFUL) << 34;
+                raw |= ((ulong)(cursor >> 5) & 0x07FFFFFFUL) << 7;
+                BitConverter.GetBytes(raw).CopyTo(fsb, HeaderBytes + i * 8);
+                cursor += pieces[i].Length;
+            }
+
+            return fsb;
+        }
+
+        private static byte[] SpliceFsb(byte[] bank, ParsedBank parsed, byte[] fsb)
+        {
+            var oldData = BitConverter.ToInt32(bank, parsed.DataSizeAt);
+            var oldLength = HeaderBytes + parsed.SampleHeaderSize + parsed.NameTableSize + oldData;
+            var tail = bank.Length - (parsed.FsbAt + oldLength);
+            if (tail < 0)
+            {
+                tail = 0;
+                oldLength = bank.Length - parsed.FsbAt;
+            }
+
+            var output = new byte[parsed.FsbAt + fsb.Length + tail];
+            Buffer.BlockCopy(bank, 0, output, 0, parsed.FsbAt);
+            Buffer.BlockCopy(fsb, 0, output, parsed.FsbAt, fsb.Length);
+            if (tail > 0)
+            {
+                Buffer.BlockCopy(bank, parsed.FsbAt + oldLength, output, parsed.FsbAt + fsb.Length, tail);
+            }
+
+            BitConverter.GetBytes(output.Length - 8).CopyTo(output, 4);
+            if (parsed.FsbLengthAt >= 0)
+            {
+                BitConverter.GetBytes(fsb.Length).CopyTo(output, parsed.FsbLengthAt);
+            }
+
+            if (parsed.SndSizeAt >= 0)
+            {
+                var sndSize = (parsed.FsbAt - parsed.SndPayload) + fsb.Length;
+                BitConverter.GetBytes(sndSize).CopyTo(output, parsed.SndSizeAt);
+            }
+
+            return output;
+        }
+
+        public static void Restore(string root)
+        {
+            EnsureClosed(root);
+            var streams = StreamsPath(root);
+            var metaPath = MetaPath(root);
+            var bak = streams + ".nh5music.bak";
+            var metaBak = metaPath + ".nh5music.bak";
+            if (!File.Exists(bak) || !File.Exists(metaBak))
+            {
+                throw new InvalidOperationException("There is no music backup to restore.");
+            }
+
+            Save(File.ReadAllBytes(bak), streams);
+            Save(File.ReadAllBytes(metaBak), metaPath);
+        }
+
+        public static bool HasBackup(string root)
+        {
+            return File.Exists(StreamsPath(root) + ".nh5music.bak") && File.Exists(MetaPath(root) + ".nh5music.bak");
+        }
+
+        private static int[] Pair(int rows, int sampleCount, int[]? map)
+        {
+            var paired = new int[rows];
+            var useMap = map != null && map.Length == rows;
+            if (useMap)
+            {
+                for (var i = 0; i < rows; i++)
+                {
+                    if (map![i] < 0 || map[i] >= sampleCount)
+                    {
+                        useMap = false;
+                        break;
+                    }
+                }
+            }
+
+            for (var i = 0; i < rows; i++)
+            {
+                paired[i] = useMap ? map![i] : (i < sampleCount ? i : -1);
+            }
+
+            return paired;
+        }
+
+        private static string MetaPath(string root)
+        {
+            return Path.Combine(root, "NASCARHeat5_Data", "StreamingAssets", "PC", "FMOD", "Music Bank.bank");
+        }
+
+        private static void EnsureClosed(string root)
+        {
+            if (root.IndexOf("NASCARHeat5_Data", StringComparison.OrdinalIgnoreCase) < 0
+                && root.IndexOf("NASCAR Heat 5", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return;
+            }
+
+            if (Process.GetProcessesByName("NASCARHeat5").Length > 0)
+            {
+                throw new InvalidOperationException("Close Heat 5 before changing the music.");
+            }
+        }
+
+        private static short[] ReadPcm(string path)
+        {
+            using var reader = new AudioFileReader(path);
+            ISampleProvider samples = reader;
+            if (reader.WaveFormat.Channels == 1)
+            {
+                samples = new MonoToStereoSampleProvider(samples);
+            }
+            else if (reader.WaveFormat.Channels != 2)
+            {
+                throw new InvalidOperationException("Use a mono or stereo mp3.");
+            }
+
+            if (samples.WaveFormat.SampleRate != 48000)
+            {
+                samples = new WdlResamplingSampleProvider(samples, 48000);
+            }
+
+            var floats = new List<float>();
+            var buf = new float[48000];
+            int read;
+            while ((read = samples.Read(buf, 0, buf.Length)) > 0)
+            {
+                for (var i = 0; i < read; i++)
+                {
+                    floats.Add(buf[i]);
+                }
+
+                if (floats.Count > 48000 * 2 * MaxSeconds)
+                {
+                    throw new InvalidOperationException("That file is longer than 15 minutes.");
+                }
+            }
+
+            if (floats.Count < 48000)
+            {
+                throw new InvalidOperationException("That file is too short.");
+            }
+
+            var pcm = new short[floats.Count];
+            for (var i = 0; i < pcm.Length; i++)
+            {
+                var clamped = floats[i];
+                if (clamped > 1f)
+                {
+                    clamped = 1f;
+                }
+
+                if (clamped < -1f)
+                {
+                    clamped = -1f;
+                }
+
+                pcm[i] = (short)Math.Round(clamped * 32767f);
+            }
+
+            return pcm;
+        }
+
+        private sealed class SampleSlot
+        {
+            public int HeaderAt;
+            public int Samples;
+            public int Offset;
+            public int DataAt;
+            public int Length;
+            public ulong Raw;
+            public string Name = "";
+        }
+
+        private sealed class ParsedBank
+        {
+            public int FsbAt;
+            public int DataSizeAt;
+            public int SampleHeaderSize;
+            public int NameTableSize;
+            public int DataAt;
+            public int SndSizeAt;
+            public int SndPayload;
+            public int FsbLengthAt;
+            public int Mode;
+            public List<SampleSlot> Samples = new List<SampleSlot>();
+        }
+
+        public static byte[] PreviewPcm(string root, int sampleIndex)
+        {
+            var path = StreamsPath(root);
+            using var file = File.OpenRead(path);
+            var headerLength = (int)Math.Min(1024 * 1024, file.Length);
+            var header = new byte[headerLength];
+            var got = file.Read(header, 0, header.Length);
+            if (got != header.Length)
+            {
+                Array.Resize(ref header, got);
+            }
+
+            var parsed = Parse(header, file.Length);
+            if (sampleIndex < 0 || sampleIndex >= parsed.Samples.Count)
+            {
+                throw new InvalidOperationException("That song has no audio.");
+            }
+
+            var slot = parsed.Samples[sampleIndex];
+            if (parsed.Mode != 16)
+            {
+                file.Position = 0;
+                var whole = new byte[file.Length];
+                var gotAll = 0;
+                while (gotAll < whole.Length)
+                {
+                    var read = file.Read(whole, gotAll, whole.Length - gotAll);
+                    if (read <= 0)
+                    {
+                        throw new InvalidOperationException("That song has no audio.");
+                    }
+
+                    gotAll += read;
+                }
+
+                var dataSize = BitConverter.ToInt32(whole, parsed.DataSizeAt);
+                var fsbLength = HeaderBytes + parsed.SampleHeaderSize + parsed.NameTableSize + dataSize;
+                var decoded = FmodPcm.ReadStereo48(root, whole, parsed.FsbAt, fsbLength, sampleIndex, SourceRate(slot.Raw));
+                var wave = new byte[decoded.Length * 2];
+                Buffer.BlockCopy(decoded, 0, wave, 0, wave.Length);
+                return wave;
+            }
+
+            var data = new byte[slot.Length];
+            file.Position = slot.DataAt;
+            var filled = 0;
+            while (filled < data.Length)
+            {
+                var read = file.Read(data, filled, data.Length - filled);
+                if (read <= 0)
+                {
+                    throw new InvalidOperationException("That song has no audio.");
+                }
+
+                filled += read;
+            }
+
+            var pcm = FadpcmCodec.DecodeStereo(data, slot.Samples);
+            var bytes = new byte[pcm.Length * 2];
+            Buffer.BlockCopy(pcm, 0, bytes, 0, bytes.Length);
+            return bytes;
+        }
+
+        private static ParsedBank Parse(byte[] bank)
+        {
+            return Parse(bank, bank.Length);
+        }
+
+        private static ParsedBank Parse(byte[] bank, long fileLength)
+        {
+            var fsb = IndexOf(bank, Encoding.ASCII.GetBytes("FSB5"));
+            if (fsb < 0 || Encoding.ASCII.GetString(bank, fsb, 4) != "FSB5")
+            {
+                throw new InvalidOperationException("Music bank was not recognized.");
+            }
+
+            var version = BitConverter.ToInt32(bank, fsb + 4);
+            var count = BitConverter.ToInt32(bank, fsb + 8);
+            var headerSize = BitConverter.ToInt32(bank, fsb + 12);
+            var nameSize = BitConverter.ToInt32(bank, fsb + 16);
+            var dataSize = BitConverter.ToInt32(bank, fsb + 20);
+            var mode = BitConverter.ToInt32(bank, fsb + 24);
+            if (version != 1 || (mode != 16 && mode != 15) || count < 1 || count > 128)
+            {
+                throw new InvalidOperationException("Music bank was not recognized.");
+            }
+
+            var parsed = new ParsedBank
+            {
+                FsbAt = fsb,
+                Mode = mode,
+                DataSizeAt = fsb + 20,
+                SampleHeaderSize = headerSize,
+                NameTableSize = nameSize,
+                DataAt = fsb + HeaderBytes + headerSize + nameSize
+            };
+            var p = fsb + HeaderBytes;
+            var headerEnd = fsb + HeaderBytes + headerSize;
+            for (var i = 0; i < count; i++)
+            {
+                if (p + 8 > headerEnd)
+                {
+                    throw new InvalidOperationException("Music bank was not recognized.");
+                }
+
+                var slot = new SampleSlot { HeaderAt = p, Raw = BitConverter.ToUInt64(bank, p) };
+                p += 8;
+                var next = (slot.Raw & 1) != 0;
+                slot.Offset = (int)(((slot.Raw >> 7) & 0x07FFFFFF) << 5);
+                slot.Samples = (int)((slot.Raw >> 34) & 0x3FFFFFFF);
+                while (next)
+                {
+                    if (p + 4 > headerEnd)
+                    {
+                        throw new InvalidOperationException("Music bank was not recognized.");
+                    }
+
+                    var flag = BitConverter.ToUInt32(bank, p);
+                    next = (flag & 1) != 0;
+                    var size = (int)((flag >> 1) & 0xFFFFFF);
+                    p += 4 + size;
+                }
+
+                parsed.Samples.Add(slot);
+            }
+
+            if (p > headerEnd)
+            {
+                throw new InvalidOperationException("Music bank was not recognized.");
+            }
+
+            for (var i = 0; i < parsed.Samples.Count; i++)
+            {
+                var slot = parsed.Samples[i];
+                var end = i + 1 < parsed.Samples.Count ? parsed.Samples[i + 1].Offset : dataSize;
+                slot.Length = end - slot.Offset;
+                slot.DataAt = parsed.DataAt + slot.Offset;
+                if (slot.Offset < 0 || slot.Length <= 0 || slot.DataAt + (long)slot.Length > fileLength || (slot.Offset & 31) != 0)
+                {
+                    throw new InvalidOperationException("Music bank was not recognized.");
+                }
+            }
+
+            parsed.SndSizeAt = -1;
+            parsed.FsbLengthAt = -1;
+            var cursor = 12;
+            while (cursor + 8 <= fsb)
+            {
+                var id = Encoding.ASCII.GetString(bank, cursor, 4);
+                var size = BitConverter.ToInt32(bank, cursor + 4);
+                if (id == "LIST")
+                {
+                    cursor += 12;
+                    continue;
+                }
+
+                if (id == "SNDH" && size >= 12)
+                {
+                    var payload = cursor + 8;
+                    var fsbLength = HeaderBytes + headerSize + nameSize + dataSize;
+                    for (var i = 0; i <= size - 4; i += 4)
+                    {
+                        if (BitConverter.ToInt32(bank, payload + i) == fsbLength)
+                        {
+                            parsed.FsbLengthAt = payload + i;
+                            break;
+                        }
+                    }
+                }
+
+                if (id == "SND ")
+                {
+                    parsed.SndSizeAt = cursor + 4;
+                    parsed.SndPayload = cursor + 8;
+                }
+
+                cursor += 8 + size + (size & 1);
+            }
+
+            if (parsed.SndPayload > fsb && parsed.SndPayload >= 0)
+            {
+                throw new InvalidOperationException("Music bank was not recognized.");
+            }
+
+            ReadNames(bank, parsed);
+            return parsed;
+        }
+
+        private static void ReadNames(byte[] bank, ParsedBank parsed)
+        {
+            if (parsed.NameTableSize < parsed.Samples.Count * 4)
+            {
+                return;
+            }
+
+            var table = parsed.DataAt - parsed.NameTableSize;
+            if (table < 0 || table + parsed.Samples.Count * 4 > bank.Length)
+            {
+                return;
+            }
+
+            for (var i = 0; i < parsed.Samples.Count; i++)
+            {
+                var offset = BitConverter.ToInt32(bank, table + i * 4);
+                var start = table + offset;
+                if (offset < 0 || start < table || start >= bank.Length)
+                {
+                    continue;
+                }
+
+                var end = start;
+                while (end < bank.Length && bank[end] != 0)
+                {
+                    end++;
+                }
+
+                parsed.Samples[i].Name = Encoding.UTF8.GetString(bank, start, end - start);
+            }
+        }
+
+        private static byte[] Rebuild(byte[] bank, ParsedBank parsed, byte[][] pieces, int[] counts)
+        {
+            if (parsed.SndSizeAt < 0 || parsed.FsbLengthAt < 0)
+            {
+                throw new InvalidOperationException("Music bank was not recognized.");
+            }
+
+            var dataSize = 0;
+            for (var i = 0; i < pieces.Length; i++)
+            {
+                if ((pieces[i].Length & 31) != 0)
+                {
+                    throw new InvalidOperationException("Music bank was not recognized.");
+                }
+
+                dataSize += pieces[i].Length;
+            }
+
+            var output = new byte[parsed.DataAt + dataSize];
+            Buffer.BlockCopy(bank, 0, output, 0, parsed.DataAt);
+            var cursor = 0;
+            for (var i = 0; i < pieces.Length; i++)
+            {
+                Buffer.BlockCopy(pieces[i], 0, output, parsed.DataAt + cursor, pieces[i].Length);
+                var raw = parsed.Samples[i].Raw;
+                raw &= ~(0x3FFFFFFFUL << 34);
+                raw &= ~(0x07FFFFFFUL << 7);
+                raw &= ~(0xFUL << 1);
+                raw |= 9UL << 1;
+                raw |= ((ulong)counts[i] & 0x3FFFFFFFUL) << 34;
+                raw |= ((ulong)(cursor >> 5) & 0x07FFFFFFUL) << 7;
+                var packed = BitConverter.GetBytes(raw);
+                Buffer.BlockCopy(packed, 0, output, parsed.Samples[i].HeaderAt, 8);
+                cursor += pieces[i].Length;
+            }
+
+            Buffer.BlockCopy(BitConverter.GetBytes(dataSize), 0, output, parsed.DataSizeAt, 4);
+            var fsbLength = HeaderBytes + parsed.SampleHeaderSize + parsed.NameTableSize + dataSize;
+            Buffer.BlockCopy(BitConverter.GetBytes(fsbLength), 0, output, parsed.FsbLengthAt, 4);
+            var sndSize = (parsed.FsbAt - parsed.SndPayload) + fsbLength;
+            Buffer.BlockCopy(BitConverter.GetBytes(sndSize), 0, output, parsed.SndSizeAt, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(output.Length - 8), 0, output, 4, 4);
+            return output;
+        }
+
+        private static int IndexOf(byte[] data, byte[] needle)
+        {
+            for (var i = 0; i <= data.Length - needle.Length; i++)
+            {
+                var ok = true;
+                for (var j = 0; j < needle.Length; j++)
+                {
+                    if (data[i + j] != needle[j])
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+
+                if (ok)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private static void Save(byte[] bytes, string path)
+        {
+            var tmp = path + ".nh5music.tmp";
+            if (File.Exists(tmp))
+            {
+                File.Delete(tmp);
+            }
+
+            File.WriteAllBytes(tmp, bytes);
+            if (File.Exists(path))
+            {
+                var attrs = File.GetAttributes(path);
+                if ((attrs & FileAttributes.ReadOnly) != 0)
+                {
+                    File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+                }
+            }
+
+            File.Replace(tmp, path, null);
+        }
+    }
+}
