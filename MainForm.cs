@@ -20,6 +20,7 @@ public sealed class MainForm : Form
     Panel? _header;
     Panel? _locateRow;
     bool _filling;
+    bool _dirty;
     bool _hosted;
     string? _root;
 
@@ -142,8 +143,33 @@ public sealed class MainForm : Form
         var restore = Transport("Restore", TransportGlyph.Restore, new Point(196, 42));
         choose.Click += (_, __) => ChooseFiles();
         clear.Click += (_, __) => ClearSelected();
-        apply.Click += (_, __) => Apply();
-        restore.Click += (_, __) => Restore();
+        apply.Click += (_, __) => { if (Ask("Are you sure you want to Apply?")) Apply(); };
+        restore.Click += (_, __) => { if (Ask("Are you sure you want to Restore?")) Restore(); };
+        FormClosing += (_, e) =>
+        {
+            if (!_dirty)
+            {
+                return;
+            }
+
+            var answer = MessageBox.Show(this, "Do you want to Apply these Changes?", Text, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (answer == DialogResult.Cancel)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            if (answer == DialogResult.No)
+            {
+                return;
+            }
+
+            Apply();
+            if (_dirty)
+            {
+                e.Cancel = true;
+            }
+        };
         var tips = new ToolTip();
         tips.SetToolTip(choose, "Choose mp3");
         tips.SetToolTip(clear, "Clear");
@@ -338,6 +364,11 @@ public sealed class MainForm : Form
         _filling = false;
     }
 
+    bool Ask(string text)
+    {
+        return MessageBox.Show(this, text, Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+    }
+
     void StoreSelected()
     {
         if (_filling || _songs.SelectedItems.Count == 0)
@@ -348,6 +379,7 @@ public sealed class MainForm : Form
         var item = _songs.SelectedItems[0];
         item.SubItems[2].Text = _title.Text;
         item.SubItems[3].Text = _artist.Text;
+        _dirty = true;
     }
 
     void ChooseFiles()
@@ -369,6 +401,7 @@ public sealed class MainForm : Form
         }
 
         Assign(dialog.FileNames, _songs.SelectedItems.Count == 0 ? 0 : _songs.SelectedItems[0].Index);
+        _dirty = true;
     }
 
     void Assign(string[] paths, int start)
@@ -442,6 +475,7 @@ public sealed class MainForm : Form
             Cursor = Cursors.WaitCursor;
             SetStatus(Theme.Yellow, "Writing music. Leave Heat closed.");
             MusicBank.Apply(_root, files, titles, artists);
+            _dirty = false;
             SetStatus(Theme.Yellow, "Saved. Heat will show the title and artist you entered.");
         }
         catch (Exception ex)
@@ -465,6 +499,7 @@ public sealed class MainForm : Form
         {
             MusicBank.Restore(_root);
             Reload();
+            _dirty = false;
             SetStatus(Theme.Yellow, "Restored the music copy from before this tool changed it.");
         }
         catch (Exception ex)
