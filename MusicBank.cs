@@ -22,6 +22,11 @@ namespace Heat5Music
         private const int HeaderBytes = 60;
         private const int MaxSeconds = 15 * 60;
 
+        static string BackupOf(string path)
+        {
+            return GameBackup.Keep(path, ".nh5music.bak");
+        }
+
         public static string StreamsPath(string root)
         {
             return Path.Combine(root, "NASCARHeat5_Data", "StreamingAssets", "PC", "FMOD", "Music Bank.streams.bank");
@@ -137,8 +142,8 @@ namespace Heat5Music
             }
 
             var metaPath = MetaPath(root);
-            var bak = streams + ".nh5music.bak";
-            var metaBak = metaPath + ".nh5music.bak";
+            var bak = BackupOf(streams);
+            var metaBak = BackupOf(metaPath);
             // First APPLY copies the user's current music banks. They may already be modded.
             // Later APPLY and RESTORE use that copy. Do not replace it with a stock bank.
             if (!File.Exists(bak))
@@ -267,7 +272,7 @@ namespace Heat5Music
             int[]? eventMap = null;
             try
             {
-                eventMap = MusicMeta.SampleMap(metaBak, streams + ".nh5music.bak");
+                eventMap = MusicMeta.SampleMap(metaBak, BackupOf(streams));
             }
             catch (Exception)
             {
@@ -411,8 +416,8 @@ namespace Heat5Music
             EnsureClosed(root);
             var streams = StreamsPath(root);
             var metaPath = MetaPath(root);
-            var bak = streams + ".nh5music.bak";
-            var metaBak = metaPath + ".nh5music.bak";
+            var bak = BackupOf(streams);
+            var metaBak = BackupOf(metaPath);
             if (!File.Exists(bak) || !File.Exists(metaBak))
             {
                 throw new InvalidOperationException("There is no music backup to restore.");
@@ -424,7 +429,7 @@ namespace Heat5Music
 
         public static bool HasBackup(string root)
         {
-            return File.Exists(StreamsPath(root) + ".nh5music.bak") && File.Exists(MetaPath(root) + ".nh5music.bak");
+            return File.Exists(BackupOf(StreamsPath(root))) && File.Exists(BackupOf(MetaPath(root)));
         }
 
         private static int[] Pair(int rows, int sampleCount, int[]? map)
