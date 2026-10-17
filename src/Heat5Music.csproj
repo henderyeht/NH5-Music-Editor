@@ -25,7 +25,7 @@
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Assets\heat5-logo.png" LogicalName="Heat5Music.heat5-logo.png" />
-    <EmbeddedResource Include="..\NH5 CC\src\NH5CC\Assets\banner-header.jpg" Link="banner-header.jpg" LogicalName="Heat5Music.banner-header.jpg" />
-    <EmbeddedResource Include="..\NH5 CC\src\NH5CC\Assets\icon-music.jpg" Link="icon-music.jpg" LogicalName="Heat5Music.icon-music.jpg" />
+    <EmbeddedResource Include="..\..\NH5 CC\src\NH5CC\Assets\banner-header.jpg" Link="banner-header.jpg" LogicalName="Heat5Music.banner-header.jpg" />
+    <EmbeddedResource Include="..\..\NH5 CC\src\NH5CC\Assets\icon-music.jpg" Link="icon-music.jpg" LogicalName="Heat5Music.icon-music.jpg" />
   </ItemGroup>
 </Project>
