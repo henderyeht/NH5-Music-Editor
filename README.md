@@ -4,7 +4,7 @@ Replace the menu music in **NASCAR Heat 5**, and the title and artist Heat shows
 
 ## Download
 
-`dist/NASCAR Heat 5 Music Editor.exe` is the public drop on GitHub.
+`dist/Standalone/NASCAR Heat 5 Music Editor.exe` is the public drop on GitHub. Open **NASCAR Heat 5 Music Editor** in this folder to start it.
 
 If Windows Defender quarantines it as `Trojan:Win32/Wacatac.B!ml`, that is a machine-learning false positive, not a real virus. Allow the file in Windows Security:
 
@@ -36,19 +36,19 @@ Your other mods stay as they are. RESTORE puts those two files back to that copy
 
 ## Build
 
-Source is in this folder. Testers only need the exe from `dist/`.
+Source is in `src/`. Testers only need the exe from `dist/Standalone/`.
 
 ```
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -p:DebugSymbols=false -o dist-out
+dotnet publish src\Heat5Music.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -p:DebugSymbols=false -o dist-out
 ```
 
-Copy `NASCAR Heat 5 Music Editor.exe` into `dist/`. Requires the .NET 8 SDK to build. The exe runs on its own.
+Copy `NASCAR Heat 5 Music Editor.exe` into `dist/Standalone/`. Zip that file to `dist/NASCAR Heat 5 Music Editor.zip`. Requires the .NET 8 SDK to build. The exe runs on its own.
 
 ## Layout
 
 ```
-*.cs          C# source (WinForms)
-Heat5Music.csproj
-Assets/       heat5-logo.png
-dist/         NASCAR Heat 5 Music Editor.exe  - the public drop
+NASCAR Heat 5 Music Editor.lnk   opens the standalone
+src/          C# source, Heat5Music.csproj, Assets/
+dist/Standalone/   NASCAR Heat 5 Music Editor.exe
+dist/NASCAR Heat 5 Music Editor.zip
 ```
