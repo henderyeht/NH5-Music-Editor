@@ -52,3 +52,9 @@ src/          C# source, Heat5Music.csproj, Assets/
 dist/Standalone/   NASCAR Heat 5 Music Editor.exe
 dist/NASCAR Heat 5 Music Editor.zip
 ```
+
+## License
+
+Copyright (C) 2026 henderyeht
+
+The original code in this project is free software under the GNU General Public License, version 3. You may share it and change it. Every copy, including a changed or built copy, must keep this copyright notice and the license in the LICENSE file. Third-party libraries keep their own licenses.
