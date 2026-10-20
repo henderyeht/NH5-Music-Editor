@@ -12,7 +12,7 @@
     <AssemblyTitle>NASCAR Heat 5 Music Editor</AssemblyTitle>
     <Company>NH5 Multiplayer Revival</Company>
     <Authors>NH5 Multiplayer Revival</Authors>
-    <Copyright>Copyright (c) 2026</Copyright>
+    <Copyright>Copyright (C) 2026 henderyeht</Copyright>
     <Description>Replace NASCAR Heat 5 menu music and the title and artist Heat shows.</Description>
     <Version>1.0.0</Version>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
