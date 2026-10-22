@@ -200,6 +200,84 @@ namespace Heat5Music
             return Write(root);
         }
 
+        public static bool FitLengths(byte[] meta, string streamsPath, IReadOnlyList<int> sampleCounts, IReadOnlyList<bool>? exact)
+        {
+            var sampleGuids = ReadSampleGuids(streamsPath);
+            var timelineAt = new Dictionary<string, int>(StringComparer.Ordinal);
+            var timelineSample = new Dictionary<string, int>(StringComparer.Ordinal);
+            var pendingSample = -1;
+            var cursor = 0;
+            while (cursor + 8 <= meta.Length)
+            {
+                var id = Encoding.ASCII.GetString(meta, cursor, 4);
+                var size = BitConverter.ToInt32(meta, cursor + 4);
+                if (size < 0 || cursor + 8 + size > meta.Length)
+                {
+                    break;
+                }
+
+                var payload = cursor + 8;
+                if (id is "RIFF" or "LIST")
+                {
+                    cursor += 12;
+                    continue;
+                }
+
+                if (id == "TLNB" && size >= 62)
+                {
+                    timelineAt[Convert.ToHexString(meta, payload, 16)] = payload + 58;
+                }
+                else if (id == "WAIB" && size >= 32)
+                {
+                    pendingSample = sampleGuids.IndexOf(Convert.ToHexString(meta, payload + 16, 16));
+                }
+                else if (id == "INST" && size >= 16 && pendingSample >= 0)
+                {
+                    timelineSample[Convert.ToHexString(meta, payload, 16)] = pendingSample;
+                    pendingSample = -1;
+                }
+
+                cursor += 8 + size + (size & 1);
+            }
+
+            var wrote = false;
+            foreach (var pair in timelineAt)
+            {
+                if (!timelineSample.TryGetValue(pair.Key, out var sample))
+                {
+                    continue;
+                }
+
+                if (sample < 0 || sample >= sampleCounts.Count)
+                {
+                    continue;
+                }
+
+                var audio = sampleCounts[sample];
+                if (audio <= 0)
+                {
+                    continue;
+                }
+
+                var current = BitConverter.ToInt32(meta, pair.Value);
+                var replace = exact != null && sample < exact.Count && exact[sample];
+                if (!replace && current >= audio)
+                {
+                    continue;
+                }
+
+                if (current == audio)
+                {
+                    continue;
+                }
+
+                Buffer.BlockCopy(BitConverter.GetBytes(audio), 0, meta, pair.Value, 4);
+                wrote = true;
+            }
+
+            return wrote;
+        }
+
         private sealed class Chunk
         {
             public string Id = "";
