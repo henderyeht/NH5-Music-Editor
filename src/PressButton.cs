@@ -120,9 +120,7 @@ enum TransportGlyph
     Pause,
     Stop,
     Choose,
-    Clear,
-    Apply,
-    Restore
+    Clear
 }
 
 sealed class TransportButton : PressButton
@@ -179,26 +177,6 @@ sealed class TransportButton : PressButton
         {
             g.DrawLine(pen, cx - 7, cy - 7, cx + 7, cy + 7);
             g.DrawLine(pen, cx + 7, cy - 7, cx - 7, cy + 7);
-            return;
         }
-
-        if (Glyph == TransportGlyph.Apply)
-        {
-            g.DrawLines(pen, new[]
-            {
-                new Point(cx - 8, cy),
-                new Point(cx - 2, cy + 7),
-                new Point(cx + 9, cy - 8)
-            });
-            return;
-        }
-
-        g.DrawArc(pen, cx - 8, cy - 7, 14, 14, 40, 280);
-        g.DrawLines(pen, new[]
-        {
-            new Point(cx - 8, cy - 2),
-            new Point(cx - 8, cy - 8),
-            new Point(cx - 2, cy - 8)
-        });
     }
 }
