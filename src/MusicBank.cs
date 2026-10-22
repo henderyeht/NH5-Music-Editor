@@ -138,14 +138,19 @@ namespace Heat5Music
 
             if (!any)
             {
-                throw new InvalidOperationException("Choose an mp3 for at least one song.");
+                if (!Repair(root))
+                {
+                    throw new InvalidOperationException("Choose an mp3 for at least one song.");
+                }
+
+                return;
             }
 
             var metaPath = MetaPath(root);
             var bak = BackupOf(streams);
             var metaBak = BackupOf(metaPath);
-            // First APPLY copies the user's current music banks. They may already be modded.
-            // Later APPLY and RESTORE use that copy. Do not replace it with a stock bank.
+            // First APPLY copies the user's current music banks. Do not replace that copy.
+            // A later APPLY keeps audio that is already different from the copy.
             if (!File.Exists(bak))
             {
                 File.Copy(streams, bak, false);
@@ -156,17 +161,22 @@ namespace Heat5Music
                 File.Copy(metaPath, metaBak, false);
             }
 
-            var bank = File.ReadAllBytes(bak);
+            // A bank the old editor already changed stays as it is. The saved copy is only the starting point when the game still matches it.
+            var edited = File.Exists(bak) && !SameFile(streams, bak);
+            var bank = File.ReadAllBytes(edited ? streams : bak);
+            var metaSource = edited ? metaPath : metaBak;
+            var streamSource = edited ? streams : bak;
             var parsed = Parse(bank);
             if (parsed.Mode != 16)
             {
-                ApplyVorbis(root, streams, metaPath, metaBak, bank, parsed, files, titles, artists);
+                ApplyVorbis(root, streams, metaPath, metaSource, streamSource, bank, parsed, files, titles, artists);
+                ReleaseSkippedSong(root);
                 return;
             }
             int[]? map = null;
             try
             {
-                map = MusicMeta.SampleMap(metaBak, bak);
+                map = MusicMeta.SampleMap(metaSource, streamSource);
             }
             catch (Exception)
             {
@@ -225,12 +235,23 @@ namespace Heat5Music
 
             var rebuilt = Rebuild(bank, parsed, pieces, counts);
             Parse(rebuilt);
-            var meta = MusicMeta.Rewrite(File.ReadAllBytes(metaBak), newTitles, newArtists);
+            var meta = MusicMeta.Rewrite(File.ReadAllBytes(metaSource), newTitles, newArtists);
+            var exact = edited ? ChangedSamples(streams, bak) : new bool[parsed.Samples.Count];
+            for (var i = 0; i < files.Count; i++)
+            {
+                if (!string.IsNullOrWhiteSpace(files[i]) && paired[i] >= 0)
+                {
+                    exact[paired[i]] = true;
+                }
+            }
+
+            MusicMeta.FitLengths(meta, streamSource, counts, exact);
             Save(rebuilt, streams);
             Save(meta, metaPath);
+            ReleaseSkippedSong(root);
         }
 
-        private static void ApplyVorbis(string root, string streams, string metaPath, string metaBak, byte[] bank, ParsedBank parsed, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists)
+        private static void ApplyVorbis(string root, string streams, string metaPath, string metaBak, string streamSource, byte[] bank, ParsedBank parsed, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists)
         {
             var count = parsed.Samples.Count;
             var pieces = new byte[count][];
@@ -272,7 +293,7 @@ namespace Heat5Music
             int[]? eventMap = null;
             try
             {
-                eventMap = MusicMeta.SampleMap(metaBak, BackupOf(streams));
+                eventMap = MusicMeta.SampleMap(metaBak, streamSource);
             }
             catch (Exception)
             {
@@ -306,6 +327,13 @@ namespace Heat5Music
             var rebuilt = SpliceFsb(bank, parsed, fsb);
             Parse(rebuilt);
             var meta = MusicMeta.Rewrite(File.ReadAllBytes(metaBak), newTitles, newArtists);
+            var exact = new bool[counts.Length];
+            for (var i = 0; i < exact.Length; i++)
+            {
+                exact[i] = true;
+            }
+
+            MusicMeta.FitLengths(meta, streamSource, counts, exact);
             Save(rebuilt, streams);
             Save(meta, metaPath);
         }
@@ -425,6 +453,240 @@ namespace Heat5Music
 
             Save(File.ReadAllBytes(bak), streams);
             Save(File.ReadAllBytes(metaBak), metaPath);
+            var strings = StringsPath(root);
+            var stringsBak = BackupOf(strings);
+            if (File.Exists(stringsBak))
+            {
+                Save(File.ReadAllBytes(stringsBak), strings);
+            }
+        }
+
+        static bool Repair(string root)
+        {
+            EnsureClosed(root);
+            var streams = StreamsPath(root);
+            var metaPath = MetaPath(root);
+            var bak = BackupOf(streams);
+            var metaBak = BackupOf(metaPath);
+            var parsed = Parse(File.ReadAllBytes(streams));
+            var counts = new int[parsed.Samples.Count];
+            for (var i = 0; i < counts.Length; i++)
+            {
+                counts[i] = parsed.Samples[i].Samples;
+            }
+
+            var fitted = File.ReadAllBytes(metaPath);
+            var changed = File.Exists(bak) ? ChangedSamples(streams, bak) : null;
+            var lengths = MusicMeta.FitLengths(fitted, streams, counts, changed);
+            var skipped = HasSkippedSong(root);
+            if (!lengths && !skipped)
+            {
+                return false;
+            }
+
+            if (!File.Exists(bak))
+            {
+                File.Copy(streams, bak, false);
+            }
+
+            if (!File.Exists(metaBak))
+            {
+                File.Copy(metaPath, metaBak, false);
+            }
+
+            if (lengths)
+            {
+                Save(fitted, metaPath);
+            }
+
+            ReleaseSkippedSong(root);
+            return true;
+        }
+
+        static bool SameFile(string left, string right)
+        {
+            FileInfo a;
+            FileInfo b;
+            try
+            {
+                a = new FileInfo(left);
+                b = new FileInfo(right);
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+
+            if (!a.Exists || !b.Exists || a.Length != b.Length)
+            {
+                return false;
+            }
+
+            using var leftStream = new FileStream(left, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var rightStream = new FileStream(right, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var leftBuf = new byte[1024 * 1024];
+            var rightBuf = new byte[1024 * 1024];
+            while (true)
+            {
+                var got = leftStream.Read(leftBuf, 0, leftBuf.Length);
+                var filled = 0;
+                while (filled < got)
+                {
+                    var read = rightStream.Read(rightBuf, filled, got - filled);
+                    if (read <= 0)
+                    {
+                        return false;
+                    }
+
+                    filled += read;
+                }
+
+                if (got == 0)
+                {
+                    return true;
+                }
+
+                for (var i = 0; i < got; i++)
+                {
+                    if (leftBuf[i] != rightBuf[i])
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        static bool[] ChangedSamples(string livePath, string savedPath)
+        {
+            var liveBytes = File.ReadAllBytes(livePath);
+            var live = Parse(liveBytes);
+            var flags = new bool[live.Samples.Count];
+            if (!File.Exists(savedPath))
+            {
+                return flags;
+            }
+
+            try
+            {
+                var savedBytes = File.ReadAllBytes(savedPath);
+                var saved = Parse(savedBytes);
+                if (saved.Samples.Count != live.Samples.Count)
+                {
+                    for (var i = 0; i < flags.Length; i++)
+                    {
+                        flags[i] = true;
+                    }
+
+                    return flags;
+                }
+
+                for (var i = 0; i < live.Samples.Count; i++)
+                {
+                    var current = live.Samples[i];
+                    var savedSample = saved.Samples[i];
+                    if (current.Samples != savedSample.Samples
+                        || current.Length != savedSample.Length
+                        || !RangeEqual(liveBytes, current.DataAt, savedBytes, savedSample.DataAt, current.Length))
+                    {
+                        flags[i] = true;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                for (var i = 0; i < flags.Length; i++)
+                {
+                    flags[i] = true;
+                }
+            }
+
+            return flags;
+        }
+
+        static bool RangeEqual(byte[] left, int leftAt, byte[] right, int rightAt, int length)
+        {
+            if (leftAt < 0 || rightAt < 0 || length < 0 || leftAt + (long)length > left.Length || rightAt + (long)length > right.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < length; i++)
+            {
+                if (left[leftAt + i] != right[rightAt + i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        static string StringsPath(string root)
+        {
+            return Path.Combine(root, "NASCARHeat5_Data", "StreamingAssets", "PC", "FMOD", "Master Bank.strings.bank");
+        }
+
+        static bool HasSkippedSong(string root)
+        {
+            var path = StringsPath(root);
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            return IndexOf(File.ReadAllBytes(path), Encoding.ASCII.GetBytes("RightThereAllAlong")) >= 0;
+        }
+
+        static void ReleaseSkippedSong(string root)
+        {
+            var path = StringsPath(root);
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            var data = File.ReadAllBytes(path);
+            var oldName = Encoding.ASCII.GetBytes("RightThereAllAlong");
+            var newName = Encoding.ASCII.GetBytes("TrackThereAllAlong");
+            if (oldName.Length != newName.Length)
+            {
+                throw new InvalidOperationException("The playlist name could not be kept.");
+            }
+            var hit = false;
+            for (var i = 0; i <= data.Length - oldName.Length; i++)
+            {
+                var match = true;
+                for (var j = 0; j < oldName.Length; j++)
+                {
+                    if (data[i + j] != oldName[j])
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+
+                if (!match)
+                {
+                    continue;
+                }
+
+                Buffer.BlockCopy(newName, 0, data, i, newName.Length);
+                hit = true;
+                i += oldName.Length - 1;
+            }
+
+            if (!hit)
+            {
+                return;
+            }
+
+            var bak = BackupOf(path);
+            if (!File.Exists(bak))
+            {
+                File.Copy(path, bak, false);
+            }
+
+            Save(data, path);
         }
 
         public static bool HasBackup(string root)
