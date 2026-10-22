@@ -27,12 +27,9 @@ The list is the music already in that install. Choose an mp3 or wav for a song, 
 
 PLAY, PAUSE, and STOP play the selected song. An assigned file plays that file. Otherwise the tool plays the song already in the game. Play on a new selection stops the current song and starts the selected one.
 
-The first APPLY saves a copy of your current music files. That copy is your game as it is, not a stock original. Later APPLY builds from that copy. Only these two files are replaced:
+The first APPLY saves a copy of your current music files. That copy is your game as it is, not a stock original. RESTORE puts that copy back. If songs were already replaced, a later APPLY keeps those songs and makes each one play to the end of the file that is in the game.
 
-- `NASCARHeat5_Data\StreamingAssets\PC\FMOD\Music Bank.streams.bank`
-- `NASCARHeat5_Data\StreamingAssets\PC\FMOD\Music Bank.bank`
-
-Your other mods stay as they are. RESTORE puts those two files back to that copy.
+APPLY writes the music banks, and on the original soundtrack it also changes one name in `Master Bank.strings.bank` so a skipped song plays. RESTORE puts that file back too. Paints, tracks, and other mods stay as they are.
 
 ## Build
 
