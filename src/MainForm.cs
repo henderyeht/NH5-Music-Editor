@@ -28,7 +28,7 @@ public sealed class MainForm : Form
     {
         Text = "NASCAR Heat 5 Music Editor";
         StartPosition = FormStartPosition.Manual;
-        ClientSize = new Size(944, 700);
+        ClientSize = new Size(928, 700);
         MinimumSize = new Size(860, 620);
         BackColor = Theme.Asphalt;
         ForeColor = Theme.White;
@@ -185,14 +185,15 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             ForeColor = Theme.Mute,
             BackColor = Theme.Asphalt,
-            Padding = new Padding(16, 8, 12, 0),
+            Padding = new Padding(16, 8, 40, 0),
             Text = "Locate the NASCAR Heat 5 folder."
         };
         var foot = new Panel { Dock = DockStyle.Bottom, Height = 36, BackColor = Theme.Asphalt };
-        var help = new MusicHelpMark();
+        var help = new MusicHelpMark { Dock = DockStyle.Right, Width = 36 };
         help.Click += (_, __) => MusicManual.Open(this);
         foot.Controls.Add(_status);
         foot.Controls.Add(help);
+        help.BringToFront();
 
         Controls.Add(_songs);
         Controls.Add(edit);
