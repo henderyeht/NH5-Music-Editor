@@ -28,7 +28,7 @@ public sealed class MainForm : Form
     {
         Text = "NASCAR Heat 5 Music Editor";
         StartPosition = FormStartPosition.Manual;
-        ClientSize = new Size(980, 700);
+        ClientSize = new Size(944, 700);
         MinimumSize = new Size(860, 620);
         BackColor = Theme.Asphalt;
         ForeColor = Theme.White;
@@ -47,25 +47,6 @@ public sealed class MainForm : Form
             }
         };
 
-        var note = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 78,
-            BackColor = Theme.Panel,
-            Padding = new Padding(12, 8, 12, 8)
-        };
-        note.Paint += (_, e) => Theme.PaintLeftAccent(e.Graphics, note.Height);
-        note.Controls.Add(new Label
-        {
-            Dock = DockStyle.Fill,
-            ForeColor = Theme.White,
-            BackColor = Theme.Panel,
-            Padding = new Padding(8, 0, 0, 0),
-            Text = "Close NASCAR Heat 5 before making changes.\r\n"
-                 + "The first APPLY saves a copy of your current music files. That copy is your game as it is, not a stock original.\r\n"
-                 + "Only the two music banks are replaced. Your other mods stay as they are. RESTORE puts those two files back to that copy."
-        });
-
         _locateRow = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = Theme.Asphalt };
         var locate = new LinkLabel
         {
@@ -81,7 +62,7 @@ public sealed class MainForm : Form
         _path = new Label
         {
             Location = new Point(130, 4),
-            Size = new Size(820, 20),
+            Size = new Size(790, 20),
             Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right,
             ForeColor = Theme.Mute,
             BackColor = Theme.Asphalt,
@@ -123,24 +104,22 @@ public sealed class MainForm : Form
             Location = new Point(16, 10),
             AutoSize = true
         });
-        _title = Field(130, 6, 340);
+        _title = Field(130, 6, 220);
         edit.Controls.Add(new Label
         {
             Text = "Shown artist",
             ForeColor = Theme.Yellow,
             BackColor = Theme.Asphalt,
-            Location = new Point(490, 10),
+            Location = new Point(370, 10),
             AutoSize = true
         });
-        _artist = Field(600, 6, 340);
+        _artist = Field(480, 6, 220);
         _title.TextChanged += (_, __) => StoreSelected();
         _artist.TextChanged += (_, __) => StoreSelected();
         var choose = Transport("Choose mp3", TransportGlyph.Choose, new Point(16, 42));
         var clear = Transport("Clear", TransportGlyph.Clear, new Point(76, 42));
-        var apply = Transport("Apply", TransportGlyph.Apply, new Point(136, 42));
-        apply.BackColor = Theme.Red;
-        apply.ForeColor = Theme.White;
-        var restore = Transport("Restore", TransportGlyph.Restore, new Point(196, 42));
+        var apply = MakeButton("Apply", Theme.Red, Theme.White, new Point(136, 42), new Size(84, 36), 0);
+        var restore = MakeButton("Restore", Color.FromArgb(24, 24, 26), Theme.Yellow, new Point(228, 42), new Size(108, 36), 0);
         choose.Click += (_, __) => ChooseFiles();
         clear.Click += (_, __) => ClearSelected();
         apply.Click += (_, __) => { if (Ask("Are you sure you want to Apply?")) Apply(); };
@@ -184,7 +163,8 @@ public sealed class MainForm : Form
         _playLabel = new Label
         {
             Location = new Point(210, 90),
-            Size = new Size(730, 24),
+            Size = new Size(700, 24),
+            Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right,
             ForeColor = Theme.Mute,
             BackColor = Theme.Asphalt,
             AutoEllipsis = true
@@ -217,7 +197,6 @@ public sealed class MainForm : Form
         Controls.Add(_songs);
         Controls.Add(edit);
         Controls.Add(foot);
-        Controls.Add(note);
         Controls.Add(_locateRow);
         Controls.Add(_header);
         Shown += (_, __) =>
@@ -476,7 +455,7 @@ public sealed class MainForm : Form
             SetStatus(Theme.Yellow, "Writing music. Leave Heat closed.");
             MusicBank.Apply(_root, files, titles, artists);
             _dirty = false;
-            SetStatus(Theme.Yellow, "Saved. Heat will show the title and artist you entered.");
+            SetStatus(Theme.Yellow, "Saved.");
         }
         catch (Exception ex)
         {
