@@ -9,8 +9,7 @@ sealed class MusicHelpMark : Control
     public MusicHelpMark()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-        Dock = DockStyle.Right;
-        Width = 36;
+        Size = new Size(28, 28);
         Cursor = Cursors.Hand;
         BackColor = Theme.Asphalt;
         AccessibleName = "Manual";
