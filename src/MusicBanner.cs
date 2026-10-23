@@ -93,18 +93,12 @@ static class MusicBanner
         var banner = _header;
         if (banner != null && banner.Width > 1 && banner.Height > 1)
         {
-            var scale = dest.Height / (float)banner.Height;
-            var drawnW = banner.Width * scale;
-            if (drawnW <= dest.Width + 0.5f)
-            {
-                var w = Math.Max(1, (int)Math.Round(drawnW));
-                g.DrawImage(banner, new Rectangle(dest.Right - w, dest.Y, w, dest.Height));
-            }
-            else
-            {
-                var srcW = dest.Width / scale;
-                g.DrawImage(banner, dest, banner.Width - srcW, 0f, srcW, banner.Height, GraphicsUnit.Pixel);
-            }
+            var scale = Math.Max(dest.Width / (float)banner.Width, dest.Height / (float)banner.Height);
+            var srcW = Math.Min(banner.Width, dest.Width / scale);
+            var srcH = Math.Min(banner.Height, dest.Height / scale);
+            var srcX = Math.Max(0f, banner.Width - srcW);
+            var srcY = Math.Max(0f, (banner.Height - srcH) / 2f);
+            g.DrawImage(banner, dest, srcX, srcY, srcW, srcH, GraphicsUnit.Pixel);
         }
 
         var titleX = dest.X + 16f;
