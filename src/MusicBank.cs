@@ -737,10 +737,99 @@ namespace Heat5Music
             }
         }
 
+        public static WaveStream OpenFile(string path)
+        {
+            if (!path.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
+            {
+                return new AudioFileReader(path);
+            }
+
+            Mp3FileReader? frames = null;
+            AudioFileReader? media = null;
+            try
+            {
+                frames = new Mp3FileReader(path);
+            }
+            catch (Exception)
+            {
+            }
+
+            try
+            {
+                media = new AudioFileReader(path);
+            }
+            catch (Exception)
+            {
+                if (frames == null)
+                {
+                    throw new InvalidOperationException("That file has no audio.");
+                }
+
+                return frames;
+            }
+
+            if (frames == null)
+            {
+                return media;
+            }
+
+            if (media.TotalTime > frames.TotalTime + TimeSpan.FromMilliseconds(250))
+            {
+                frames.Dispose();
+                return media;
+            }
+
+            media.Dispose();
+            return frames;
+        }
+
         private static short[] ReadPcm(string path)
         {
-            using var reader = new AudioFileReader(path);
-            ISampleProvider samples = reader;
+            var openers = new List<Func<WaveStream>>();
+            if (path.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
+            {
+                openers.Add(() => new Mp3FileReader(path));
+                openers.Add(() => new AudioFileReader(path));
+            }
+            else
+            {
+                openers.Add(() => new AudioFileReader(path));
+            }
+
+            short[] best = Array.Empty<short>();
+            InvalidOperationException? failed = null;
+            foreach (var open in openers)
+            {
+                try
+                {
+                    var pcm = DecodePcm(open());
+                    if (pcm.Length > best.Length)
+                    {
+                        best = pcm;
+                    }
+                }
+                catch (InvalidOperationException ex)
+                {
+                    failed = ex;
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            if (best.Length < 48000)
+            {
+                throw failed ?? new InvalidOperationException("That file has no audio.");
+            }
+
+            return best;
+        }
+
+        private static short[] DecodePcm(WaveStream reader)
+        {
+            using (reader)
+            {
+            ISampleProvider samples = reader.ToSampleProvider();
             if (reader.WaveFormat.Channels == 1)
             {
                 samples = new MonoToStereoSampleProvider(samples);
@@ -794,6 +883,7 @@ namespace Heat5Music
             }
 
             return pcm;
+            }
         }
 
         private sealed class SampleSlot
