@@ -25,7 +25,7 @@ If the game is not found, click **Locate game…** and pick the NASCAR Heat 5 fo
 
 The list is the music already in that install. Choose an mp3 or wav for a song, edit the title and artist Heat shows, then APPLY.
 
-PLAY, PAUSE, and STOP play the selected song. An assigned file plays that file. Otherwise the tool plays the song already in the game. Play on a new selection stops the current song and starts the selected one.
+PLAY, PAUSE, and STOP play the selected song. The rail beside those buttons moves through that preview. The game still starts each song at the beginning and plays it to the end. An assigned file plays that file. Otherwise the tool plays the song already in the game. Play on a new selection stops the current song and starts the selected one.
 
 The first APPLY saves a copy of your current music files. That copy is your game as it is, not a stock original. RESTORE puts that copy back. If songs were already replaced, a later APPLY keeps those songs and makes each one play to the end of the file that is in the game.
 
