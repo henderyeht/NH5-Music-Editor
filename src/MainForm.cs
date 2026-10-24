@@ -11,10 +11,14 @@ public sealed class MainForm : Form
     readonly Label _status;
     readonly Label _path;
     readonly Label _playLabel;
+    readonly SeekRail _rail;
+    readonly System.Windows.Forms.Timer _playTimer;
     WaveOutEvent? _wave;
     WaveStream? _source;
     int _playIndex = -1;
     bool _paused;
+    bool _railMoved;
+    bool _holdStop;
     readonly List<string> _files = new List<string>();
     readonly Icon _icon;
     Panel? _header;
@@ -160,15 +164,31 @@ public sealed class MainForm : Form
         play.Click += (_, __) => PlaySelected();
         pause.Click += (_, __) => PauseAudio();
         stop.Click += (_, __) => StopAudio();
+        _rail = new SeekRail
+        {
+            Location = new Point(208, 84),
+            Size = new Size(578, 36),
+            Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right
+        };
+        _rail.PositionPicked += (_, __) =>
+        {
+            _railMoved = true;
+            ListenAt(_rail.Fraction);
+        };
         _playLabel = new Label
         {
-            Location = new Point(210, 90),
-            Size = new Size(700, 24),
-            Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right,
+            Location = new Point(794, 90),
+            Size = new Size(118, 24),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
             ForeColor = Theme.Mute,
             BackColor = Theme.Asphalt,
-            AutoEllipsis = true
+            TextAlign = ContentAlignment.MiddleRight,
+            Text = "0:00 / 0:00"
         };
+        _playTimer = new System.Windows.Forms.Timer { Interval = 200 };
+        _playTimer.Tick += (_, __) => RefreshRail();
+        _playTimer.Start();
+        FormClosed += (_, __) => _playTimer.Stop();
         edit.Controls.Add(_title);
         edit.Controls.Add(_artist);
         edit.Controls.Add(choose);
@@ -178,6 +198,7 @@ public sealed class MainForm : Form
         edit.Controls.Add(play);
         edit.Controls.Add(pause);
         edit.Controls.Add(stop);
+        edit.Controls.Add(_rail);
         edit.Controls.Add(_playLabel);
 
         _status = new Label
@@ -624,18 +645,30 @@ public sealed class MainForm : Form
         }
 
         var index = _songs.SelectedItems[0].Index;
-        if (_wave != null && _playIndex == index)
+        if (_playIndex == index && _source != null)
         {
-            if (_paused)
+            if (_wave == null)
+            {
+                if (_source.Position >= _source.Length - Math.Max(1, _source.WaveFormat.BlockAlign))
+                {
+                    _source.Position = 0;
+                }
+
+                StartOutput();
+            }
+            else if (_paused || _wave.PlaybackState != PlaybackState.Playing)
             {
                 _wave.Play();
-                _paused = false;
-                _playLabel.Text = "Playing " + SongName(index);
             }
 
+            _paused = false;
+            SetStatus(Theme.Mute, "Playing " + SongName(index));
+            RefreshRail();
             return;
         }
 
+        var parked = _source == null && _railMoved ? _rail.Fraction : 0;
+        var useParked = _source == null && _railMoved;
         StopAudio();
         try
         {
@@ -649,7 +682,7 @@ public sealed class MainForm : Form
                     throw new InvalidOperationException("Missing file: " + file);
                 }
 
-                source = new AudioFileReader(file);
+                source = MusicBank.OpenFile(file);
             }
             else
             {
@@ -663,15 +696,18 @@ public sealed class MainForm : Form
                 source = new RawSourceWaveStream(new MemoryStream(pcm), new WaveFormat(48000, 16, 2));
             }
 
-            var wave = new WaveOutEvent();
-            wave.PlaybackStopped += OnPlaybackStopped;
-            wave.Init(source);
             _source = source;
-            _wave = wave;
             _playIndex = index;
             _paused = false;
-            wave.Play();
-            _playLabel.Text = "Playing " + SongName(index);
+            if (useParked)
+            {
+                PlaceSource(parked);
+                _rail.Fraction = parked;
+            }
+
+            StartOutput();
+            SetStatus(Theme.Mute, "Playing " + SongName(index));
+            RefreshRail();
         }
         catch (Exception ex)
         {
@@ -684,6 +720,20 @@ public sealed class MainForm : Form
         }
     }
 
+    void StartOutput()
+    {
+        if (_source == null)
+        {
+            return;
+        }
+
+        var wave = new WaveOutEvent();
+        wave.PlaybackStopped += OnPlaybackStopped;
+        wave.Init(_source);
+        _wave = wave;
+        wave.Play();
+    }
+
     void PauseAudio()
     {
         if (_wave == null || _wave.PlaybackState != PlaybackState.Playing)
@@ -693,16 +743,23 @@ public sealed class MainForm : Form
 
         _wave.Pause();
         _paused = true;
-        _playLabel.Text = "Paused";
+        RefreshRail();
     }
 
     void StopAudio()
     {
         _paused = false;
         _playIndex = -1;
+        _railMoved = false;
+        _holdStop = false;
+        if (_rail != null && !_rail.IsDisposed)
+        {
+            _rail.Fraction = 0;
+        }
+
         if (_playLabel != null && !_playLabel.IsDisposed)
         {
-            _playLabel.Text = "";
+            _playLabel.Text = "0:00 / 0:00";
         }
 
         var wave = _wave;
@@ -742,20 +799,106 @@ public sealed class MainForm : Form
                     return;
                 }
 
-                _paused = false;
-                _playIndex = -1;
-                _playLabel.Text = "";
                 var wave = _wave;
-                var source = _source;
                 _wave = null;
-                _source = null;
                 wave?.Dispose();
-                source?.Dispose();
+                if (_holdStop)
+                {
+                    _holdStop = false;
+                    if (_source != null)
+                    {
+                        PlaceSource(_rail.Fraction);
+                        _paused = false;
+                        StartOutput();
+                    }
+
+                    RefreshRail();
+                    return;
+                }
+
+                _paused = false;
+                if (_source != null && _source.Length > 0)
+                {
+                    _rail.Fraction = 1;
+                }
+
+                RefreshRail();
             }));
         }
         catch (InvalidOperationException)
         {
         }
+    }
+
+    void ListenAt(double fraction)
+    {
+        if (_source == null)
+        {
+            RefreshRail();
+            return;
+        }
+
+        var playing = _wave != null && _wave.PlaybackState == PlaybackState.Playing;
+        if (!playing)
+        {
+            PlaceSource(fraction);
+            RefreshRail();
+            return;
+        }
+
+        _holdStop = true;
+        _wave!.Stop();
+    }
+
+    void PlaceSource(double fraction)
+    {
+        if (_source == null || _source.Length <= 0)
+        {
+            return;
+        }
+
+        var align = Math.Max(1, _source.WaveFormat.BlockAlign);
+        var pos = (long)Math.Round(_source.Length * Math.Clamp(fraction, 0, 1));
+        pos -= pos % align;
+        if (pos < 0)
+        {
+            pos = 0;
+        }
+
+        if (pos > _source.Length - align)
+        {
+            pos = Math.Max(0, _source.Length - align);
+        }
+
+        _source.Position = pos;
+    }
+
+    void RefreshRail()
+    {
+        if (_rail == null || _rail.IsDisposed || _playLabel == null || _playLabel.IsDisposed)
+        {
+            return;
+        }
+
+        if (_source != null && _source.Length > 0 && !_rail.Dragging && !_holdStop)
+        {
+            _rail.Fraction = _source.Position / (double)_source.Length;
+        }
+
+        var length = _source == null ? TimeSpan.Zero : _source.TotalTime;
+        var at = TimeSpan.FromTicks((long)(length.Ticks * _rail.Fraction));
+        _playLabel.Text = Clock(at) + " / " + Clock(length);
+    }
+
+    static string Clock(TimeSpan time)
+    {
+        if (time < TimeSpan.Zero)
+        {
+            time = TimeSpan.Zero;
+        }
+
+        var minutes = (int)time.TotalMinutes;
+        return minutes.ToString() + ":" + time.Seconds.ToString("00");
     }
 
     string SongName(int index)
