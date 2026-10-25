@@ -385,11 +385,6 @@ public sealed class MainForm : Form
 
     void ChooseFiles()
     {
-        if (_songs.SelectedItems.Count == 0 && _songs.Items.Count > 0)
-        {
-            _songs.Items[0].Selected = true;
-        }
-
         using var dialog = new OpenFileDialog
         {
             Filter = "Audio (*.mp3;*.wav)|*.mp3;*.wav|All files|*.*",
@@ -401,8 +396,23 @@ public sealed class MainForm : Form
             return;
         }
 
-        Assign(dialog.FileNames, _songs.SelectedItems.Count == 0 ? 0 : _songs.SelectedItems[0].Index);
+        Assign(dialog.FileNames, _songs.SelectedItems.Count == 0 ? NextOpenRow() : _songs.SelectedItems[0].Index);
         _dirty = true;
+    }
+
+    int NextOpenRow()
+    {
+        for (var i = 0; i < _songs.Items.Count; i++)
+        {
+            var song = (HeatSong)_songs.Items[i].Tag!;
+            var chosen = i < _files.Count ? _files[i] : "";
+            if (string.IsNullOrWhiteSpace(chosen) && !song.Custom)
+            {
+                return i;
+            }
+        }
+
+        return _songs.Items.Count;
     }
 
     void Assign(string[] paths, int start)
@@ -410,14 +420,31 @@ public sealed class MainForm : Form
         var row = start;
         foreach (var path in paths)
         {
-            if (row >= _songs.Items.Count)
-            {
-                break;
-            }
-
             while (_files.Count <= row)
             {
                 _files.Add("");
+            }
+
+            if (row >= _songs.Items.Count)
+            {
+                var addedTags = MusicTags.Read(path);
+                var song = new HeatSong
+                {
+                    Index = row,
+                    SampleIndex = -1,
+                    Title = addedTags.Title,
+                    Artist = addedTags.Artist,
+                    InPlaylist = false
+                };
+                var added = new ListViewItem(string.IsNullOrWhiteSpace(song.Title) ? Path.GetFileNameWithoutExtension(path) : song.Title);
+                added.SubItems.Add(Path.GetFileName(path));
+                added.SubItems.Add(string.IsNullOrWhiteSpace(song.Title) ? Path.GetFileNameWithoutExtension(path) : song.Title);
+                added.SubItems.Add(song.Artist);
+                added.Tag = song;
+                _songs.Items.Add(added);
+                _files[row] = path;
+                row++;
+                continue;
             }
 
             var tags = MusicTags.Read(path);
@@ -445,6 +472,18 @@ public sealed class MainForm : Form
 
         var item = _songs.SelectedItems[0];
         var song = (HeatSong)item.Tag!;
+        if (song.SampleIndex < 0)
+        {
+            var index = item.Index;
+            _songs.Items.RemoveAt(index);
+            if (index < _files.Count)
+            {
+                _files.RemoveAt(index);
+            }
+
+            return;
+        }
+
         _files[item.Index] = "";
         item.SubItems[1].Text = "";
         item.SubItems[2].Text = song.Title;
@@ -464,18 +503,24 @@ public sealed class MainForm : Form
         var files = new string?[_songs.Items.Count];
         var titles = new string[_songs.Items.Count];
         var artists = new string[_songs.Items.Count];
+        var samples = new int[_songs.Items.Count];
+        var playlist = new bool[_songs.Items.Count];
         for (var i = 0; i < _songs.Items.Count; i++)
         {
-            files[i] = _files[i];
+            var song = (HeatSong)_songs.Items[i].Tag!;
+            files[i] = i < _files.Count ? _files[i] : "";
             titles[i] = _songs.Items[i].SubItems[2].Text.Trim();
             artists[i] = _songs.Items[i].SubItems[3].Text.Trim();
+            samples[i] = song.SampleIndex;
+            playlist[i] = song.InPlaylist;
         }
 
         try
         {
             Cursor = Cursors.WaitCursor;
             SetStatus(Theme.Yellow, "Writing music. Leave Heat closed.");
-            MusicBank.Apply(_root, files, titles, artists);
+            MusicBank.Apply(_root, files, titles, artists, samples, playlist);
+            Reload();
             _dirty = false;
             SetStatus(Theme.Yellow, "Saved.");
         }
@@ -543,7 +588,7 @@ public sealed class MainForm : Form
 
         var point = _songs.PointToClient(new Point(e.X, e.Y));
         var hit = _songs.HitTest(point);
-        var start = hit.Item == null ? 0 : hit.Item.Index;
+        var start = hit.Item == null ? NextOpenRow() : hit.Item.Index;
         Assign(files.ToArray(), start);
     }
 
@@ -692,6 +737,11 @@ public sealed class MainForm : Form
                 }
 
                 var song = (HeatSong)_songs.Items[index].Tag!;
+                if (song.SampleIndex < 0)
+                {
+                    throw new InvalidOperationException("Choose a file for that song.");
+                }
+
                 var pcm = MusicBank.PreviewPcm(_root, song.SampleIndex);
                 source = new RawSourceWaveStream(new MemoryStream(pcm), new WaveFormat(48000, 16, 2));
             }
