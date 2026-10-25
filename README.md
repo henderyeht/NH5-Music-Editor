@@ -23,7 +23,7 @@ Close NASCAR Heat 5 before making changes.
 
 If the game is not found, click **Locate game…** and pick the NASCAR Heat 5 folder.
 
-The list is the music already in that install. Choose an mp3 or wav for a song, edit the title and artist Heat shows, then APPLY.
+The list is the music already in that install. That includes the original soundtrack, songs an older editor already replaced, and a mod that changed or added songs. Choose an mp3 or wav for a song to replace it, edit the title and artist Heat shows, then APPLY. Click a row to replace that song. If the list is already full, or you choose more files than there are open rows, the extra files are added and play with the rest of the menu music.
 
 PLAY, PAUSE, and STOP play the selected song. The rail beside those buttons moves through that preview. The game still starts each song at the beginning and plays it to the end. An assigned file plays that file. Otherwise the tool plays the song already in the game. Play on a new selection stops the current song and starts the selected one.
 
