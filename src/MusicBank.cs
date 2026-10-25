@@ -15,9 +15,11 @@ namespace Heat5Music
         public string Title = "";
         public string Artist = "";
         public int Samples;
+        public bool InPlaylist = true;
+        public bool Custom;
     }
 
-    internal static class MusicBank
+    internal static partial class MusicBank
     {
         private const int HeaderBytes = 60;
         private const int MaxSeconds = 15 * 60;
@@ -69,55 +71,97 @@ namespace Heat5Music
             {
             }
 
-            var useNames = parsed != null
-                && parsed.Samples.Count > 0
-                && (parsed.Mode != 16 || titles.Count != parsed.Samples.Count);
-            if (useNames && parsed != null)
+            var sampleCount = parsed == null ? 0 : parsed.Samples.Count;
+            var custom = new bool[sampleCount];
+            try
             {
-                var named = new List<HeatSong>();
+                var flags = ChangedSamples(streams, BackupOf(streams));
+                if (flags.Length == custom.Length)
+                {
+                    custom = flags;
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            var songs = new List<HeatSong>();
+            var used = new bool[sampleCount];
+            if (titles.Count > 0)
+            {
+                var paired = Pair(titles.Count, sampleCount, map);
+                for (var i = 0; i < titles.Count; i++)
+                {
+                    var sample = paired[i];
+                    if (sample >= 0 && sample < used.Length)
+                    {
+                        used[sample] = true;
+                    }
+
+                    var title = titles[i].Title;
+                    songs.Add(new HeatSong
+                    {
+                        Index = songs.Count,
+                        SampleIndex = sample,
+                        Title = string.IsNullOrWhiteSpace(title) ? "Song " + (songs.Count + 1) : title,
+                        Artist = titles[i].Artist,
+                        Samples = sample >= 0 && parsed != null ? parsed.Samples[sample].Samples : 0,
+                        InPlaylist = true,
+                        Custom = sample >= 0 && sample < custom.Length && custom[sample]
+                    });
+                }
+            }
+            else if (parsed != null)
+            {
                 for (var i = 0; i < parsed.Samples.Count; i++)
                 {
+                    used[i] = true;
                     var name = parsed.Samples[i].Name;
-                    named.Add(new HeatSong
+                    songs.Add(new HeatSong
                     {
                         Index = i,
                         SampleIndex = i,
                         Title = string.IsNullOrWhiteSpace(name) ? "Song " + (i + 1) : name,
                         Artist = "",
-                        Samples = parsed.Samples[i].Samples
+                        Samples = parsed.Samples[i].Samples,
+                        InPlaylist = true,
+                        Custom = i < custom.Length && custom[i]
                     });
                 }
-
-                return named;
             }
 
-            var sampleCount = parsed == null ? 0 : parsed.Samples.Count;
-            var rows = titles.Count > 0 ? titles.Count : sampleCount;
-            if (rows == 0)
+            if (parsed != null)
+            {
+                for (var i = 0; i < parsed.Samples.Count; i++)
+                {
+                    if (used[i])
+                    {
+                        continue;
+                    }
+
+                    var name = parsed.Samples[i].Name;
+                    songs.Add(new HeatSong
+                    {
+                        Index = songs.Count,
+                        SampleIndex = i,
+                        Title = string.IsNullOrWhiteSpace(name) ? "Song " + (songs.Count + 1) : name,
+                        Artist = "",
+                        Samples = parsed.Samples[i].Samples,
+                        InPlaylist = false,
+                        Custom = i < custom.Length && custom[i]
+                    });
+                }
+            }
+
+            if (songs.Count == 0)
             {
                 throw new InvalidOperationException("Music bank was not recognized.");
-            }
-
-            var paired = Pair(rows, sampleCount, map);
-            var songs = new List<HeatSong>();
-            for (var i = 0; i < rows; i++)
-            {
-                var sample = paired[i];
-                var title = i < titles.Count ? titles[i].Title : "";
-                songs.Add(new HeatSong
-                {
-                    Index = i,
-                    SampleIndex = sample,
-                    Title = string.IsNullOrWhiteSpace(title) ? "Song " + (i + 1) : title,
-                    Artist = i < titles.Count ? titles[i].Artist : "",
-                    Samples = sample >= 0 && parsed != null ? parsed.Samples[sample].Samples : 0
-                });
             }
 
             return songs;
         }
 
-        public static void Apply(string root, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists)
+        public static void Apply(string root, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, IReadOnlyList<int>? sampleIndexes, IReadOnlyList<bool>? inPlaylist)
         {
             EnsureClosed(root);
             var streams = StreamsPath(root);
@@ -169,8 +213,7 @@ namespace Heat5Music
             var parsed = Parse(bank);
             if (parsed.Mode != 16)
             {
-                ApplyVorbis(root, streams, metaPath, metaSource, streamSource, bank, parsed, files, titles, artists);
-                ReleaseSkippedSong(root);
+                ApplyVorbis(root, streams, metaPath, metaSource, streamSource, bank, parsed, files, titles, artists, sampleIndexes, inPlaylist);
                 return;
             }
             int[]? map = null;
@@ -182,7 +225,7 @@ namespace Heat5Music
             {
             }
 
-            var paired = Pair(files.Count, parsed.Samples.Count, map);
+            var paired = PairRows(files.Count, parsed.Samples.Count, map, sampleIndexes);
             if (parsed.Samples.Count == 0)
             {
                 throw new InvalidOperationException("Music bank was not recognized.");
@@ -217,7 +260,7 @@ namespace Heat5Music
                 var sample = paired[i];
                 if (sample < 0)
                 {
-                    throw new InvalidOperationException("That song has no audio to replace.");
+                    continue;
                 }
 
                 counts[sample] = pcm.Length / 2;
@@ -248,12 +291,61 @@ namespace Heat5Music
             MusicMeta.FitLengths(meta, streamSource, counts, exact);
             Save(rebuilt, streams);
             Save(meta, metaPath);
+            AddChosenSongs(root, files, titles, artists, paired, inPlaylist);
             ReleaseSkippedSong(root);
         }
 
-        private static void ApplyVorbis(string root, string streams, string metaPath, string metaBak, string streamSource, byte[] bank, ParsedBank parsed, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists)
+        private static int[] PairRows(int rows, int sampleCount, int[]? map, IReadOnlyList<int>? sampleIndexes)
+        {
+            if (sampleIndexes != null && sampleIndexes.Count == rows)
+            {
+                var chosen = new int[rows];
+                for (var i = 0; i < rows; i++)
+                {
+                    chosen[i] = sampleIndexes[i];
+                }
+
+                return chosen;
+            }
+
+            return Pair(rows, sampleCount, map);
+        }
+
+        private static void ApplyVorbis(string root, string streams, string metaPath, string metaBak, string streamSource, byte[] bank, ParsedBank parsed, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, IReadOnlyList<int>? sampleIndexes, IReadOnlyList<bool>? inPlaylist)
         {
             var count = parsed.Samples.Count;
+            int[]? map = null;
+            try
+            {
+                map = MusicMeta.SampleMap(metaBak, streamSource);
+            }
+            catch (Exception)
+            {
+            }
+
+            var paired = PairRows(files.Count, count, map, sampleIndexes);
+            var fileForSample = new string?[count];
+            var titleForSample = new string?[count];
+            for (var i = 0; i < files.Count; i++)
+            {
+                var sample = paired[i];
+                if (sample < 0 || sample >= count || string.IsNullOrWhiteSpace(files[i]))
+                {
+                    continue;
+                }
+
+                if (!File.Exists(files[i]!))
+                {
+                    throw new InvalidOperationException("Missing file: " + files[i]);
+                }
+
+                fileForSample[sample] = files[i];
+                if (i < titles.Count)
+                {
+                    titleForSample[sample] = titles[i];
+                }
+            }
+
             var pieces = new byte[count][];
             var counts = new int[count];
             var names = new string[count];
@@ -263,15 +355,11 @@ namespace Heat5Music
             var keepRates = new List<int>();
             for (var i = 0; i < count; i++)
             {
-                var mp3 = i < files.Count ? files[i] : null;
+                var mp3 = fileForSample[i];
                 if (string.IsNullOrWhiteSpace(mp3))
                 {
                     keep.Add(i);
                     keepRates.Add(SourceRate(parsed.Samples[i].Raw));
-                }
-                else if (!File.Exists(mp3))
-                {
-                    throw new InvalidOperationException("Missing file: " + mp3);
                 }
             }
 
@@ -281,11 +369,11 @@ namespace Heat5Music
             var keptAt = 0;
             for (var i = 0; i < count; i++)
             {
-                var mp3 = i < files.Count ? files[i] : null;
-                var pcm = string.IsNullOrWhiteSpace(mp3) ? kept[keptAt++] : ReadPcm(mp3);
+                var mp3 = fileForSample[i];
+                var pcm = string.IsNullOrWhiteSpace(mp3) ? kept[keptAt++] : ReadPcm(mp3!);
                 counts[i] = pcm.Length / 2;
                 pieces[i] = FadpcmCodec.EncodeStereo(pcm);
-                var edited = i < titles.Count ? titles[i] : "";
+                var edited = titleForSample[i] ?? "";
                 names[i] = string.IsNullOrWhiteSpace(edited) ? parsed.Samples[i].Name : edited;
             }
 
@@ -336,6 +424,8 @@ namespace Heat5Music
             MusicMeta.FitLengths(meta, streamSource, counts, exact);
             Save(rebuilt, streams);
             Save(meta, metaPath);
+            AddChosenSongs(root, files, titles, artists, paired, inPlaylist);
+            ReleaseSkippedSong(root);
         }
 
         private static int SourceRate(ulong raw)
