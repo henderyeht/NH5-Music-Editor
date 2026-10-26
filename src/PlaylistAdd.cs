@@ -116,9 +116,203 @@ namespace Heat5Music
             }
 
             meta = MusicMeta.Rewrite(meta, titleSlots, artistSlots);
+            SeparateSharedBuses(ref meta);
             Save(streams, StreamsPath(root));
             Save(meta, MetaPath(root));
             Save(strings, stringsPath);
+        }
+
+        public static void RepairSharedBuses(string root)
+        {
+            var metaPath = MetaPath(root);
+            var meta = File.ReadAllBytes(metaPath);
+            if (!SeparateSharedBuses(ref meta))
+            {
+                return;
+            }
+
+            Save(meta, metaPath);
+        }
+
+        static bool SeparateSharedBuses(ref byte[] meta)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var pending = new List<byte[]>();
+            var pendingMaster = new List<byte[]>();
+            var pendingGroup = new List<byte[]>();
+            foreach (var chunk in ListChunks(meta))
+            {
+                if (chunk.Id != "EVTB" || chunk.Size < 80)
+                {
+                    continue;
+                }
+
+                var input = BytesAt(meta, chunk.Payload + 48, 16);
+                var master = BytesAt(meta, chunk.Payload + 64, 16);
+                var key = Convert.ToHexString(input) + Convert.ToHexString(master);
+                if (seen.Add(key))
+                {
+                    continue;
+                }
+
+                var group = FindGroupGuid(meta, master);
+                var inst = FindInst(meta, BytesAt(meta, chunk.Payload + 32, 16));
+                var newInput = NewGuid();
+                var newMaster = NewGuid();
+                var newGroup = NewGuid();
+                ReplaceRange(meta, input, newInput, chunk.At, chunk.End);
+                ReplaceRange(meta, master, newMaster, chunk.At, chunk.End);
+                ReplaceRange(meta, group, newGroup, inst.At, inst.End);
+                var ibus = CopyBus(meta, "IBUS", "IBSB", input);
+                var mbus = CopyBus(meta, "MBUS", "MBSB", master);
+                var gbus = CopyBus(meta, "GBUS", "GBSB", group);
+                Replace(ibus, input, newInput);
+                Replace(mbus, master, newMaster);
+                Replace(gbus, group, newGroup);
+                Replace(gbus, master, newMaster);
+                pending.Add(PadEven(ibus));
+                pendingMaster.Add(PadEven(mbus));
+                pendingGroup.Add(PadEven(gbus));
+            }
+
+            if (pending.Count == 0)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < pending.Count; i++)
+            {
+                BumpCount(meta, "IBSS");
+                BumpCount(meta, "GBSS");
+                BumpCount(meta, "MBSS");
+            }
+
+            InsertBuses(ref meta, "MBSS", Join(pendingMaster));
+            InsertBuses(ref meta, "GBSS", Join(pendingGroup));
+            InsertBuses(ref meta, "IBSS", Join(pending));
+            return true;
+        }
+
+        static void InsertBuses(ref byte[] meta, string listType, byte[] extra)
+        {
+            var list = FindList(meta, listType);
+            if (list == null)
+            {
+                throw new InvalidOperationException("The music list could not be extended.");
+            }
+
+            meta = Insert(meta, list.Value.End, extra, list.Value.At);
+        }
+
+        static byte[] Join(List<byte[]> parts)
+        {
+            var length = 0;
+            foreach (var part in parts)
+            {
+                length += part.Length;
+            }
+
+            var joined = new byte[length];
+            var at = 0;
+            foreach (var part in parts)
+            {
+                Buffer.BlockCopy(part, 0, joined, at, part.Length);
+                at += part.Length;
+            }
+
+            return joined;
+        }
+
+        static byte[] PadEven(byte[] chunk)
+        {
+            if ((chunk.Length & 1) == 0)
+            {
+                return chunk;
+            }
+
+            var padded = new byte[chunk.Length + 1];
+            Buffer.BlockCopy(chunk, 0, padded, 0, chunk.Length);
+            return padded;
+        }
+
+        static byte[] CopyBus(byte[] meta, string listType, string id, byte[] guid)
+        {
+            foreach (var chunk in ListChunks(meta))
+            {
+                if (chunk.Id == "LIST" && chunk.ListType == listType && GuidEquals(meta, chunk, id, 0, guid))
+                {
+                    return CopyChunk(meta, chunk);
+                }
+            }
+
+            throw new InvalidOperationException("The music list could not be extended.");
+        }
+
+        static byte[] FindGroupGuid(byte[] meta, byte[] master)
+        {
+            foreach (var chunk in ListChunks(meta))
+            {
+                if (chunk.Id != "GBSB" || chunk.Size < 34 || !SameBytes(meta, chunk.Payload + 18, master))
+                {
+                    continue;
+                }
+
+                return BytesAt(meta, chunk.Payload, 16);
+            }
+
+            throw new InvalidOperationException("The music list could not be extended.");
+        }
+
+        static ChunkRef FindInst(byte[] meta, byte[] timeline)
+        {
+            foreach (var chunk in ListChunks(meta))
+            {
+                if (chunk.Id == "INST" && chunk.Size >= 99 && SameBytes(meta, chunk.Payload, timeline))
+                {
+                    return chunk;
+                }
+            }
+
+            throw new InvalidOperationException("The music list could not be extended.");
+        }
+
+        static byte[] BytesAt(byte[] data, int at, int length)
+        {
+            var copy = new byte[length];
+            Buffer.BlockCopy(data, at, copy, 0, length);
+            return copy;
+        }
+
+        static bool SameBytes(byte[] data, int at, byte[] guid)
+        {
+            if (at < 0 || at + guid.Length > data.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < guid.Length; i++)
+            {
+                if (data[at + i] != guid[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        static void ReplaceRange(byte[] data, byte[] from, byte[] to, int start, int end)
+        {
+            for (var i = start; i + 16 <= end; i++)
+            {
+                if (!SameBytes(data, i, from))
+                {
+                    continue;
+                }
+
+                Buffer.BlockCopy(to, 0, data, i, 16);
+                i += 15;
+            }
         }
 
         sealed class SongAdd
