@@ -17,6 +17,7 @@ namespace Heat5Music
         public int Samples;
         public bool InPlaylist = true;
         public bool Custom;
+        public bool RestoreOriginal;
     }
 
     internal static partial class MusicBank
@@ -161,10 +162,64 @@ namespace Heat5Music
             return songs;
         }
 
-        public static void Apply(string root, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, IReadOnlyList<int>? sampleIndexes, IReadOnlyList<bool>? inPlaylist, Action<string>? progress = null)
+        public static IReadOnlyList<(string Title, string Artist)>? ReadOriginal(string root)
+        {
+            var metaBak = BackupOf(MetaPath(root));
+            if (!File.Exists(metaBak))
+            {
+                return null;
+            }
+
+            try
+            {
+                return MusicMeta.Read(metaBak);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        public static byte[] PreviewOriginal(string root, int eventIndex)
+        {
+            var streamsBak = BackupOf(StreamsPath(root));
+            var metaBak = BackupOf(MetaPath(root));
+            if (!File.Exists(streamsBak) || !File.Exists(metaBak))
+            {
+                throw new InvalidOperationException("There is no music backup to restore.");
+            }
+
+            var map = MusicMeta.SampleMap(metaBak, streamsBak);
+            if (eventIndex < 0 || eventIndex >= map.Length || map[eventIndex] < 0)
+            {
+                throw new InvalidOperationException("That song is not in the restore file.");
+            }
+
+            return PreviewPcm(root, map[eventIndex], streamsBak);
+        }
+
+        public static void Apply(string root, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, IReadOnlyList<int>? sampleIndexes, IReadOnlyList<bool>? inPlaylist, Action<string>? progress = null, IReadOnlyList<bool>? restoreOriginal = null, IReadOnlyList<int>? removeEvents = null)
         {
             progress?.Invoke("Reading the music bank");
             EnsureClosed(root);
+            if (removeEvents != null)
+            {
+                var pending = new List<int>();
+                foreach (var index in removeEvents)
+                {
+                    if (index >= 0 && !pending.Contains(index))
+                    {
+                        pending.Add(index);
+                    }
+                }
+
+                pending.Sort();
+                for (var i = pending.Count - 1; i >= 0; i--)
+                {
+                    progress?.Invoke("Removing a song");
+                    RemovePlaylistEvent(root, pending[i]);
+                }
+            }
             var streams = StreamsPath(root);
             if (!File.Exists(streams))
             {
@@ -174,7 +229,7 @@ namespace Heat5Music
             var any = false;
             for (var i = 0; i < files.Count; i++)
             {
-                if (!string.IsNullOrWhiteSpace(files[i]))
+                if (!string.IsNullOrWhiteSpace(files[i]) || (restoreOriginal != null && i < restoreOriginal.Count && restoreOriginal[i]))
                 {
                     any = true;
                     break;
@@ -210,6 +265,11 @@ namespace Heat5Music
             var parsed = Parse(bank);
             if (parsed.Mode != 16)
             {
+                if (AnyRestore(restoreOriginal))
+                {
+                    throw new InvalidOperationException("That music bank has to be saved once before a song can be restored.");
+                }
+
                 ApplyVorbis(root, streams, metaPath, metaSource, streamSource, bank, parsed, files, titles, artists, sampleIndexes, inPlaylist, progress);
                 return;
             }
@@ -242,6 +302,22 @@ namespace Heat5Music
 
             for (var i = 0; i < files.Count; i++)
             {
+                if (restoreOriginal != null && i < restoreOriginal.Count && restoreOriginal[i])
+                {
+                    var slot = paired[i];
+                    if (slot < 0)
+                    {
+                        continue;
+                    }
+
+                    var restored = i < titles.Count && !string.IsNullOrWhiteSpace(titles[i]) ? titles[i].Trim() : "song " + (i + 1);
+                    progress?.Invoke("Restoring " + restored);
+                    var original = OriginalPiece(root, i);
+                    counts[slot] = original.Frames;
+                    pieces[slot] = original.Piece;
+                    continue;
+                }
+
                 var mp3 = files[i];
                 if (string.IsNullOrWhiteSpace(mp3))
                 {
@@ -285,7 +361,12 @@ namespace Heat5Music
             var exact = edited ? ChangedSamples(streams, bak) : new bool[parsed.Samples.Count];
             for (var i = 0; i < files.Count; i++)
             {
-                if (!string.IsNullOrWhiteSpace(files[i]) && paired[i] >= 0)
+                if (paired[i] < 0)
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(files[i]) || (restoreOriginal != null && i < restoreOriginal.Count && restoreOriginal[i]))
                 {
                     exact[paired[i]] = true;
                 }
@@ -296,6 +377,7 @@ namespace Heat5Music
             Save(rebuilt, streams);
             Save(meta, metaPath);
             AddChosenSongs(root, files, titles, artists, paired, inPlaylist, progress);
+            FixWaveIndexes(streams);
             ReleaseSkippedSong(root);
         }
 
@@ -419,6 +501,7 @@ namespace Heat5Music
             Save(rebuilt, streams);
             Save(meta, metaPath);
             AddChosenSongs(root, files, titles, artists, paired, inPlaylist, progress);
+            FixWaveIndexes(streams);
             ReleaseSkippedSong(root);
         }
 
@@ -578,6 +661,10 @@ namespace Heat5Music
             var meta = MusicMeta.Rewrite(File.ReadAllBytes(metaPath), slots, artistSlots);
             SeparateSharedBuses(ref meta);
             Save(meta, metaPath);
+            if (File.Exists(streams))
+            {
+                FixWaveIndexes(streams);
+            }
         }
 
         static bool Repair(string root)
@@ -1030,9 +1117,50 @@ namespace Heat5Music
             public List<SampleSlot> Samples = new List<SampleSlot>();
         }
 
-        public static byte[] PreviewPcm(string root, int sampleIndex)
+        static bool AnyRestore(IReadOnlyList<bool>? restoreOriginal)
         {
-            var path = StreamsPath(root);
+            if (restoreOriginal == null)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < restoreOriginal.Count; i++)
+            {
+                if (restoreOriginal[i])
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        static (byte[] Piece, int Frames) OriginalPiece(string root, int eventIndex)
+        {
+            var streamsBak = BackupOf(StreamsPath(root));
+            var metaBak = BackupOf(MetaPath(root));
+            if (!File.Exists(streamsBak) || !File.Exists(metaBak))
+            {
+                throw new InvalidOperationException("There is no music backup to restore.");
+            }
+
+            var map = MusicMeta.SampleMap(metaBak, streamsBak);
+            if (eventIndex < 0 || eventIndex >= map.Length || map[eventIndex] < 0)
+            {
+                throw new InvalidOperationException("That song is not in the restore file.");
+            }
+
+            var bank = File.ReadAllBytes(streamsBak);
+            var parsed = Parse(bank);
+            var sample = parsed.Samples[map[eventIndex]];
+            var piece = new byte[sample.Length];
+            Buffer.BlockCopy(bank, sample.DataAt, piece, 0, piece.Length);
+            return (piece, sample.Samples);
+        }
+
+        public static byte[] PreviewPcm(string root, int sampleIndex, string? bankPath = null)
+        {
+            var path = bankPath ?? StreamsPath(root);
             using var file = File.OpenRead(path);
             var headerLength = (int)Math.Min(1024 * 1024, file.Length);
             var header = new byte[headerLength];
