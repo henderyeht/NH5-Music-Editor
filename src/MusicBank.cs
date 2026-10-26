@@ -575,7 +575,9 @@ namespace Heat5Music
                 artistSlots[i] = i < artists.Count ? artists[i] ?? "" : "";
             }
 
-            Save(MusicMeta.Rewrite(File.ReadAllBytes(metaPath), slots, artistSlots), metaPath);
+            var meta = MusicMeta.Rewrite(File.ReadAllBytes(metaPath), slots, artistSlots);
+            SeparateSharedBuses(ref meta);
+            Save(meta, metaPath);
         }
 
         static bool Repair(string root)
