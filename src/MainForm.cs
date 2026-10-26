@@ -20,6 +20,7 @@ public sealed class MainForm : Form
     bool _railMoved;
     bool _holdStop;
     readonly List<string> _files = new List<string>();
+    readonly List<int> _removed = new List<int>();
     readonly Icon _icon;
     Panel? _header;
     Panel? _locateRow;
@@ -162,7 +163,7 @@ public sealed class MainForm : Form
         };
         var tips = new ToolTip();
         tips.SetToolTip(choose, "Choose mp3");
-        tips.SetToolTip(clear, "Clear");
+        tips.SetToolTip(clear, "Put the selected song back to the original, or remove a song you added.");
         tips.SetToolTip(apply, "Apply");
         tips.SetToolTip(restore, "Restore");
         var play = Transport("Play", TransportGlyph.Play, new Point(16, 84));
@@ -327,6 +328,7 @@ public sealed class MainForm : Form
     {
         StopAudio();
         _files.Clear();
+        _removed.Clear();
         _songs.Items.Clear();
         if (string.IsNullOrWhiteSpace(_root))
         {
@@ -459,6 +461,7 @@ public sealed class MainForm : Form
             var tags = MusicTags.Read(path);
             _files[row] = path;
             var item = _songs.Items[row];
+            ((HeatSong)item.Tag!).RestoreOriginal = false;
             item.SubItems[1].Text = Path.GetFileName(path);
             item.SubItems[2].Text = tags.Title;
             item.SubItems[3].Text = tags.Artist;
@@ -474,30 +477,89 @@ public sealed class MainForm : Form
 
     void ClearSelected()
     {
-        if (_songs.SelectedItems.Count == 0)
+        if (_songs.SelectedItems.Count == 0 || string.IsNullOrWhiteSpace(_root))
         {
             return;
         }
 
-        var item = _songs.SelectedItems[0];
-        var song = (HeatSong)item.Tag!;
-        if (song.SampleIndex < 0)
+        StopAudio();
+        var originals = MusicBank.ReadOriginal(_root);
+        var picked = new List<int>();
+        foreach (ListViewItem selected in _songs.SelectedItems)
         {
-            var index = item.Index;
-            _songs.Items.RemoveAt(index);
-            if (index < _files.Count)
+            picked.Add(selected.Index);
+        }
+
+        picked.Sort();
+        var restored = 0;
+        var removed = 0;
+        for (var n = picked.Count - 1; n >= 0; n--)
+        {
+            var index = picked[n];
+            var item = _songs.Items[index];
+            var song = (HeatSong)item.Tag!;
+            var canRestore = originals != null && song.InPlaylist && song.SampleIndex >= 0 && song.Index < originals.Count;
+            if (canRestore)
             {
-                _files.RemoveAt(index);
+                var original = originals![song.Index];
+                song.RestoreOriginal = true;
+                song.Title = original.Title;
+                song.Artist = original.Artist;
+                item.Text = original.Title;
+                if (index < _files.Count)
+                {
+                    _files[index] = "";
+                }
+
+                item.SubItems[1].Text = "";
+                item.SubItems[2].Text = original.Title;
+                item.SubItems[3].Text = original.Artist;
+                restored++;
+                continue;
             }
 
+            if (song.SampleIndex < 0 || !song.InPlaylist || (originals != null && song.Index >= originals.Count))
+            {
+                if (song.InPlaylist && song.SampleIndex >= 0)
+                {
+                    _removed.Add(song.Index);
+                }
+
+                _songs.Items.RemoveAt(index);
+                if (index < _files.Count)
+                {
+                    _files.RemoveAt(index);
+                }
+
+                removed++;
+                continue;
+            }
+
+            SetStatus(Theme.Error, "There is no music backup to restore.");
             return;
         }
 
-        _files[item.Index] = "";
-        item.SubItems[1].Text = "";
-        item.SubItems[2].Text = song.Title;
-        item.SubItems[3].Text = song.Artist;
-        ShowSelected();
+        _dirty = true;
+        if (_songs.Items.Count > 0)
+        {
+            var select = Math.Min(picked[0], _songs.Items.Count - 1);
+            _songs.Items[select].Selected = true;
+            _songs.Items[select].Focused = true;
+            ShowSelected();
+        }
+
+        if (removed > 0 && restored > 0)
+        {
+            SetStatus(Theme.Yellow, "Songs were put back or removed from the list. Click Apply.");
+        }
+        else if (removed > 0)
+        {
+            SetStatus(Theme.Yellow, removed == 1 ? "That song was removed from the list. Click Apply." : removed + " songs were removed from the list. Click Apply.");
+        }
+        else if (restored > 0)
+        {
+            SetStatus(Theme.Yellow, restored == 1 ? "That song is back to the original. Click Apply." : restored + " songs are back to the original. Click Apply.");
+        }
     }
 
     void Apply()
@@ -519,6 +581,7 @@ public sealed class MainForm : Form
         var artists = new string[_songs.Items.Count];
         var samples = new int[_songs.Items.Count];
         var playlist = new bool[_songs.Items.Count];
+        var restore = new bool[_songs.Items.Count];
         for (var i = 0; i < _songs.Items.Count; i++)
         {
             var song = (HeatSong)_songs.Items[i].Tag!;
@@ -527,7 +590,10 @@ public sealed class MainForm : Form
             artists[i] = _songs.Items[i].SubItems[3].Text.Trim();
             samples[i] = song.SampleIndex;
             playlist[i] = song.InPlaylist;
+            restore[i] = song.RestoreOriginal;
         }
+
+        var removed = _removed.ToArray();
 
         _busy = true;
         UseWaitCursor = true;
@@ -540,7 +606,7 @@ public sealed class MainForm : Form
             {
                 try
                 {
-                    MusicBank.Apply(_root, files, titles, artists, samples, playlist, wait.Report);
+                    MusicBank.Apply(_root, files, titles, artists, samples, playlist, wait.Report, restore, removed);
                 }
                 catch (Exception ex)
                 {
@@ -786,7 +852,7 @@ public sealed class MainForm : Form
                     throw new InvalidOperationException("Choose a file for that song.");
                 }
 
-                var pcm = MusicBank.PreviewPcm(_root, song.SampleIndex);
+                var pcm = song.RestoreOriginal ? MusicBank.PreviewOriginal(_root, song.Index) : MusicBank.PreviewPcm(_root, song.SampleIndex);
                 source = new RawSourceWaveStream(new MemoryStream(pcm), new WaveFormat(48000, 16, 2));
             }
 
