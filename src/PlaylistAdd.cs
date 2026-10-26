@@ -7,7 +7,7 @@ namespace Heat5Music
 {
     internal static partial class MusicBank
     {
-        static void AddChosenSongs(string root, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, int[] paired, IReadOnlyList<bool>? inPlaylist)
+        static void AddChosenSongs(string root, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, int[] paired, IReadOnlyList<bool>? inPlaylist, Action<string>? progress = null)
         {
             var jobs = new List<SongAdd>();
             for (var i = 0; i < files.Count; i++)
@@ -84,6 +84,7 @@ namespace Heat5Music
                     show = show.Substring(0, 80);
                 }
 
+                progress?.Invoke(string.IsNullOrWhiteSpace(show) ? "Adding a song" : "Adding " + show);
                 byte[] sampleGuid;
                 int frames;
                 if (job.ExistingSample >= 0)
@@ -278,19 +279,6 @@ namespace Heat5Music
             var waveCopy = CopyChunk(meta, templateWave.Value);
             Replace(eventCopy, eventGuid, newEvent);
             Replace(eventCopy, timelineGuid, newTimeline);
-            if (templateEvent.Value.Size >= 80)
-            {
-                var ownedA = GuidAt(meta, templateEvent.Value, "EVTB", 48);
-                var ownedB = GuidAt(meta, templateEvent.Value, "EVTB", 64);
-                var freshA = NewGuid();
-                var freshB = NewGuid();
-                Replace(eventCopy, ownedA, freshA);
-                Replace(eventCopy, ownedB, freshB);
-                Replace(timelineCopy, ownedA, freshA);
-                Replace(timelineCopy, ownedB, freshB);
-                Replace(waveCopy, ownedA, freshA);
-                Replace(waveCopy, ownedB, freshB);
-            }
             Replace(timelineCopy, eventGuid, newEvent);
             Replace(timelineCopy, timelineGuid, newTimeline);
             Replace(timelineCopy, waveGuid, newWave);
@@ -595,6 +583,19 @@ namespace Heat5Music
             {
                 var size = BitConverter.ToInt32(grown, ownerAt + 4);
                 BitConverter.GetBytes(size + span).CopyTo(grown, ownerAt + 4);
+            }
+
+            // SNDH stores the FSB file offset. Inserting a sample record before that sound
+            // moves the FSB, and a stale offset makes the game show the song name with no audio.
+            var sound = IndexOf(grown, Encoding.ASCII.GetBytes("FSB5"));
+            var header = FindId(grown, "SNDH");
+            if (sound > 0 && header != null && header.Value.Size >= 8)
+            {
+                var field = header.Value.Payload + 4;
+                if (field + 4 <= grown.Length)
+                {
+                    BitConverter.GetBytes(sound).CopyTo(grown, field);
+                }
             }
 
             return grown;
