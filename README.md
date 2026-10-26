@@ -39,7 +39,7 @@ Source is in `src/`. Testers only need the exe from `dist/Standalone/`.
 dotnet publish src\Heat5Music.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -p:DebugSymbols=false -o dist-out
 ```
 
-Copy `NASCAR Heat 5 Music Editor.exe` into `dist/Standalone/`. Zip that file to `dist/NASCAR Heat 5 Music Editor.zip`. Requires the .NET 8 SDK to build. The exe runs on its own.
+Copy `NASCAR Heat 5 Music Editor.exe` into `dist/Standalone/`. Requires the .NET 8 SDK to build. The exe runs on its own.
 
 ## Layout
 
@@ -47,7 +47,6 @@ Copy `NASCAR Heat 5 Music Editor.exe` into `dist/Standalone/`. Zip that file to 
 NASCAR Heat 5 Music Editor.lnk   opens the standalone
 src/          C# source, Heat5Music.csproj, Assets/
 dist/Standalone/   NASCAR Heat 5 Music Editor.exe
-dist/NASCAR Heat 5 Music Editor.zip
 ```
 
 ## License
