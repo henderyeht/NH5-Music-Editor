@@ -490,6 +490,261 @@ namespace Heat5Music
             InsertHash(ref meta, newEvent);
         }
 
+        internal static void RemovePlaylistEvent(string root, int eventIndex)
+        {
+            var original = ReadOriginal(root);
+            if (original != null && eventIndex < original.Count)
+            {
+                throw new InvalidOperationException("That song is part of the original soundtrack.");
+            }
+
+            var metaPath = MetaPath(root);
+            var meta = File.ReadAllBytes(metaPath);
+            var events = new List<ChunkRef>();
+            foreach (var chunk in ListChunks(meta))
+            {
+                if (chunk.Id == "EVTB" && chunk.Size >= 48)
+                {
+                    events.Add(chunk);
+                }
+            }
+
+            if (eventIndex < 0 || eventIndex >= events.Count)
+            {
+                throw new InvalidOperationException("That song could not be removed.");
+            }
+
+            var evtb = events[eventIndex];
+            var eventGuid = GuidBytes(meta, evtb.Payload);
+            var timelineGuid = GuidBytes(meta, evtb.Payload + 32);
+            var eventList = OwnerList(meta, evtb.At, "EVNT");
+            ChunkRef? timeline = null;
+            foreach (var chunk in ListChunks(meta))
+            {
+                if (chunk.Id == "TLNB" && chunk.Size >= 32 && GuidMatch(meta, chunk.Payload + 16, eventGuid))
+                {
+                    timeline = chunk;
+                    break;
+                }
+            }
+
+            if (timeline == null)
+            {
+                throw new InvalidOperationException("That song could not be removed.");
+            }
+
+            var timelineList = OwnerList(meta, timeline.Value.At, "TMLN");
+            ChunkRef? wave = null;
+            foreach (var chunk in ListChunks(meta))
+            {
+                if (chunk.Id == "INST" && chunk.Size >= 16 && GuidMatch(meta, chunk.Payload, timelineGuid))
+                {
+                    wave = chunk;
+                    break;
+                }
+            }
+
+            if (wave == null)
+            {
+                throw new InvalidOperationException("That song could not be removed.");
+            }
+
+            var waveList = OwnerList(meta, wave.Value.At, "WAIT");
+            var hashAt = HashRecord(meta, eventGuid);
+            DropCount(meta, "EVTS");
+            DropCount(meta, "TLNS");
+            DropCount(meta, "WAIS");
+            DropBank(meta);
+            if (hashAt >= 0)
+            {
+                DropHashCount(meta);
+            }
+
+            var cuts = new List<int> { eventList.At, timelineList.At, waveList.At };
+            var spans = new List<int> { SpanOf(eventList), SpanOf(timelineList), SpanOf(waveList) };
+            if (hashAt >= 0)
+            {
+                cuts.Add(hashAt);
+                spans.Add(20);
+            }
+
+            for (var i = 0; i < cuts.Count; i++)
+            {
+                var best = i;
+                for (var j = i + 1; j < cuts.Count; j++)
+                {
+                    if (cuts[j] > cuts[best])
+                    {
+                        best = j;
+                    }
+                }
+
+                var swapAt = cuts[i];
+                var swapSpan = spans[i];
+                cuts[i] = cuts[best];
+                spans[i] = spans[best];
+                cuts[best] = swapAt;
+                spans[best] = swapSpan;
+            }
+
+            for (var i = 0; i < cuts.Count; i++)
+            {
+                meta = CutRange(meta, cuts[i], spans[i]);
+            }
+
+            Save(meta, metaPath);
+        }
+
+        static byte[] GuidBytes(byte[] data, int at)
+        {
+            var guid = new byte[16];
+            Buffer.BlockCopy(data, at, guid, 0, 16);
+            return guid;
+        }
+
+        static bool GuidMatch(byte[] data, int at, byte[] guid)
+        {
+            if (at < 0 || at + 16 > data.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < 16; i++)
+            {
+                if (data[at + i] != guid[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        static ChunkRef OwnerList(byte[] data, int at, string type)
+        {
+            ChunkRef? best = null;
+            foreach (var chunk in ListChunks(data))
+            {
+                if (chunk.Id != "LIST" || chunk.ListType != type || chunk.At >= at || at >= chunk.End)
+                {
+                    continue;
+                }
+
+                if (best == null || chunk.At > best.Value.At)
+                {
+                    best = chunk;
+                }
+            }
+
+            if (best == null)
+            {
+                throw new InvalidOperationException("That song could not be removed.");
+            }
+
+            return best.Value;
+        }
+
+        static int SpanOf(ChunkRef chunk)
+        {
+            return (chunk.End - chunk.At) + (chunk.Size & 1);
+        }
+
+        static int HashRecord(byte[] bank, byte[] guid)
+        {
+            var hash = FindId(bank, "HASH");
+            if (hash == null || hash.Value.Size < 4)
+            {
+                return -1;
+            }
+
+            var payload = hash.Value.Payload;
+            var count = BitConverter.ToUInt16(bank, payload) >> 1;
+            if (BitConverter.ToUInt16(bank, payload + 2) != 20)
+            {
+                return -1;
+            }
+
+            for (var i = 0; i < count; i++)
+            {
+                var at = payload + 4 + i * 20;
+                if (GuidMatch(bank, at, guid))
+                {
+                    return at;
+                }
+            }
+
+            return -1;
+        }
+
+        static void DropHashCount(byte[] bank)
+        {
+            var hash = FindId(bank, "HASH");
+            if (hash == null)
+            {
+                return;
+            }
+
+            var count = BitConverter.ToUInt16(bank, hash.Value.Payload) >> 1;
+            if (count < 1)
+            {
+                return;
+            }
+
+            BitConverter.GetBytes((ushort)(((count - 1) << 1) | 1)).CopyTo(bank, hash.Value.Payload);
+        }
+
+        static void DropCount(byte[] bank, string listType)
+        {
+            var list = FindList(bank, listType);
+            if (list == null)
+            {
+                return;
+            }
+
+            foreach (var chunk in ListChunks(bank))
+            {
+                if (chunk.Id == "LCNT" && chunk.At > list.Value.At && chunk.At < list.Value.End && chunk.Size >= 4)
+                {
+                    var count = BitConverter.ToInt32(bank, chunk.Payload);
+                    if (count > 0)
+                    {
+                        BitConverter.GetBytes(count - 1).CopyTo(bank, chunk.Payload);
+                    }
+
+                    return;
+                }
+            }
+        }
+
+        static void DropBank(byte[] meta)
+        {
+            var bank = FindId(meta, "BNKI");
+            if (bank == null || bank.Value.Size < 28)
+            {
+                return;
+            }
+
+            var count = BitConverter.ToInt32(meta, bank.Value.Payload + 24);
+            if (count > 0)
+            {
+                BitConverter.GetBytes(count - 1).CopyTo(meta, bank.Value.Payload + 24);
+            }
+        }
+
+        static byte[] CutRange(byte[] data, int at, int span)
+        {
+            if (span <= 0 || at < 0 || at + span > data.Length)
+            {
+                throw new InvalidOperationException("That song could not be removed.");
+            }
+
+            var shrunk = new byte[data.Length - span];
+            Buffer.BlockCopy(data, 0, shrunk, 0, at);
+            Buffer.BlockCopy(data, at + span, shrunk, at, data.Length - (at + span));
+            GrowSizes(data, at, -span, shrunk);
+            return shrunk;
+        }
+
         static byte[] EnsureSampleGuid(ref byte[] streams, int sampleIndex)
         {
             var guids = SampleGuids(streams);
@@ -505,6 +760,7 @@ namespace Heat5Music
 
                 var copy = CopyChunk(streams, template.Value);
                 Buffer.BlockCopy(guid, 0, copy, 8, 16);
+                WriteSampleIndex(copy, guids.Count);
                 BumpCount(streams, "WAVS");
                 streams = Insert(streams, waves.Value.End, copy, waves.Value.At);
                 InsertHash(ref streams, guid);
@@ -512,6 +768,70 @@ namespace Heat5Music
             }
 
             return guids[sampleIndex];
+        }
+
+        static void WriteSampleIndex(byte[] chunk, int sampleIndex)
+        {
+            if (chunk.Length < 36 || sampleIndex < 0)
+            {
+                return;
+            }
+
+            if (BitConverter.ToInt32(chunk, 24) != 12 || BitConverter.ToInt32(chunk, 32) != 131072)
+            {
+                return;
+            }
+
+            BitConverter.GetBytes(sampleIndex << 16).CopyTo(chunk, 28);
+        }
+
+        static void FixWaveIndexes(string path)
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
+            var length = (int)Math.Min(stream.Length, 65536);
+            var head = new byte[length];
+            var got = stream.Read(head, 0, head.Length);
+            var fsb = got;
+            for (var i = 0; i + 4 <= got; i++)
+            {
+                if (head[i] == (byte)'F' && head[i + 1] == (byte)'S' && head[i + 2] == (byte)'B' && head[i + 3] == (byte)'5')
+                {
+                    fsb = i;
+                    break;
+                }
+            }
+
+            var index = 0;
+            var at = 0;
+            while (at + 36 <= fsb)
+            {
+                if (head[at] != (byte)'W' || head[at + 1] != (byte)'A' || head[at + 2] != (byte)'V' || head[at + 3] != (byte)' ')
+                {
+                    at++;
+                    continue;
+                }
+
+                var size = BitConverter.ToInt32(head, at + 4);
+                if (size < 28 || at + 8 + size > fsb)
+                {
+                    at++;
+                    continue;
+                }
+
+                if (BitConverter.ToInt32(head, at + 24) == 12 && BitConverter.ToInt32(head, at + 32) == 131072)
+                {
+                    var want = index << 16;
+                    if (BitConverter.ToInt32(head, at + 28) != want)
+                    {
+                        var bytes = BitConverter.GetBytes(want);
+                        stream.Position = at + 28;
+                        stream.Write(bytes, 0, 4);
+                    }
+                }
+
+                index++;
+                at += 8 + size + (size & 1);
+            }
         }
 
         static List<byte[]> SampleGuids(byte[] streams)
