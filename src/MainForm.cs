@@ -25,6 +25,7 @@ public sealed class MainForm : Form
     Panel? _locateRow;
     bool _filling;
     bool _dirty;
+    bool _busy;
     bool _hosted;
     string? _root;
 
@@ -51,7 +52,7 @@ public sealed class MainForm : Form
             }
         };
 
-        _locateRow = new Panel { Dock = DockStyle.Top, Height = 28, BackColor = Theme.Asphalt };
+        _locateRow = new Panel { Dock = DockStyle.Top, Height = 28, Width = ClientSize.Width, BackColor = Theme.Asphalt };
         var locate = new LinkLabel
         {
             Text = "Locate game…",
@@ -99,7 +100,7 @@ public sealed class MainForm : Form
         _songs.DragEnter += OnDragEnter;
         _songs.DragDrop += OnDragDrop;
 
-        var edit = new Panel { Dock = DockStyle.Bottom, Height = 128, BackColor = Theme.Asphalt };
+        var edit = new Panel { Dock = DockStyle.Bottom, Height = 128, Width = ClientSize.Width, BackColor = Theme.Asphalt };
         edit.Controls.Add(new Label
         {
             Text = "Shown title",
@@ -130,6 +131,12 @@ public sealed class MainForm : Form
         restore.Click += (_, __) => { if (Ask("Are you sure you want to Restore?")) Restore(); };
         FormClosing += (_, e) =>
         {
+            if (_busy)
+            {
+                e.Cancel = true;
+                return;
+            }
+
             if (!_dirty)
             {
                 return;
@@ -164,10 +171,12 @@ public sealed class MainForm : Form
         play.Click += (_, __) => PlaySelected();
         pause.Click += (_, __) => PauseAudio();
         stop.Click += (_, __) => StopAudio();
+        var timeWidth = 118;
+        var timeLeft = edit.Width - 16 - timeWidth;
         _rail = new SeekRail
         {
             Location = new Point(208, 84),
-            Size = new Size(578, 36),
+            Size = new Size(Math.Max(80, timeLeft - 8 - 208), 36),
             Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right
         };
         _rail.PositionPicked += (_, __) =>
@@ -177,8 +186,8 @@ public sealed class MainForm : Form
         };
         _playLabel = new Label
         {
-            Location = new Point(794, 90),
-            Size = new Size(118, 24),
+            Location = new Point(timeLeft, 90),
+            Size = new Size(timeWidth, 24),
             Anchor = AnchorStyles.Top | AnchorStyles.Right,
             ForeColor = Theme.Mute,
             BackColor = Theme.Asphalt,
@@ -493,6 +502,11 @@ public sealed class MainForm : Form
 
     void Apply()
     {
+        if (_busy)
+        {
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(_root))
         {
             SetStatus(Theme.Error, "Locate the NASCAR Heat 5 folder.");
@@ -515,11 +529,45 @@ public sealed class MainForm : Form
             playlist[i] = song.InPlaylist;
         }
 
+        _busy = true;
+        UseWaitCursor = true;
+        var wait = new ApplyWait(this);
+        Exception? error = null;
         try
         {
-            Cursor = Cursors.WaitCursor;
             SetStatus(Theme.Yellow, "Writing music. Leave Heat closed.");
-            MusicBank.Apply(_root, files, titles, artists, samples, playlist);
+            var task = Task.Run(() =>
+            {
+                try
+                {
+                    MusicBank.Apply(_root, files, titles, artists, samples, playlist, wait.Report);
+                }
+                catch (Exception ex)
+                {
+                    error = ex;
+                }
+            });
+            while (!task.IsCompleted)
+            {
+                Application.DoEvents();
+                Thread.Sleep(30);
+            }
+        }
+        finally
+        {
+            wait.Dispose();
+            UseWaitCursor = false;
+            _busy = false;
+        }
+
+        if (error != null)
+        {
+            SetStatus(Theme.Error, error.Message);
+            return;
+        }
+
+        try
+        {
             Reload();
             _dirty = false;
             SetStatus(Theme.Yellow, "Saved.");
@@ -527,10 +575,6 @@ public sealed class MainForm : Form
         catch (Exception ex)
         {
             SetStatus(Theme.Error, ex.Message);
-        }
-        finally
-        {
-            Cursor = Cursors.Default;
         }
     }
 
@@ -967,5 +1011,101 @@ public sealed class MainForm : Form
         }
 
         base.Dispose(disposing);
+    }
+}
+
+sealed class ApplyWait : IDisposable
+{
+    readonly Form _owner;
+    readonly Panel _cover;
+    readonly Label _detail;
+    readonly EventHandler _resize;
+
+    public ApplyWait(Form owner)
+    {
+        _owner = owner;
+        _cover = new Panel
+        {
+            BackColor = Theme.Asphalt,
+            Bounds = owner.ClientRectangle
+        };
+        var card = new Panel
+        {
+            Size = new Size(440, 128),
+            BackColor = Theme.Panel
+        };
+        card.Controls.Add(new Label
+        {
+            Text = "Writing music",
+            ForeColor = Theme.Yellow,
+            BackColor = Theme.Panel,
+            Location = new Point(24, 16),
+            AutoSize = true
+        });
+        _detail = new Label
+        {
+            Text = "Leave Heat closed.",
+            ForeColor = Theme.White,
+            BackColor = Theme.Panel,
+            Location = new Point(24, 44),
+            Size = new Size(392, 22),
+            AutoEllipsis = true
+        };
+        card.Controls.Add(_detail);
+        card.Controls.Add(new ProgressBar
+        {
+            Location = new Point(24, 78),
+            Size = new Size(392, 24),
+            Style = ProgressBarStyle.Marquee,
+            MarqueeAnimationSpeed = 20
+        });
+        _cover.Controls.Add(card);
+        void Place(object? sender, EventArgs e)
+        {
+            _cover.Bounds = owner.ClientRectangle;
+            card.Location = new Point(Math.Max(0, (_cover.Width - card.Width) / 2), Math.Max(0, (_cover.Height - card.Height) / 2));
+        }
+
+        _resize = Place;
+        owner.Resize += _resize;
+        owner.Controls.Add(_cover);
+        _cover.BringToFront();
+        Place(owner, EventArgs.Empty);
+        _cover.Refresh();
+    }
+
+    public void Report(string text)
+    {
+        if (_detail.IsDisposed || !_detail.IsHandleCreated)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_detail.InvokeRequired)
+            {
+                _detail.BeginInvoke(new Action<string>(Report), text);
+                return;
+            }
+
+            _detail.Text = text;
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        _owner.Resize -= _resize;
+        if (!_cover.IsDisposed)
+        {
+            _owner.Controls.Remove(_cover);
+            _cover.Dispose();
+        }
     }
 }
