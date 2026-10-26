@@ -161,8 +161,9 @@ namespace Heat5Music
             return songs;
         }
 
-        public static void Apply(string root, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, IReadOnlyList<int>? sampleIndexes, IReadOnlyList<bool>? inPlaylist)
+        public static void Apply(string root, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, IReadOnlyList<int>? sampleIndexes, IReadOnlyList<bool>? inPlaylist, Action<string>? progress = null)
         {
+            progress?.Invoke("Reading the music bank");
             EnsureClosed(root);
             var streams = StreamsPath(root);
             if (!File.Exists(streams))
@@ -182,11 +183,7 @@ namespace Heat5Music
 
             if (!any)
             {
-                if (!Repair(root))
-                {
-                    throw new InvalidOperationException("Choose an mp3 for at least one song.");
-                }
-
+                SaveShownNames(root, titles, artists, progress);
                 return;
             }
 
@@ -213,7 +210,7 @@ namespace Heat5Music
             var parsed = Parse(bank);
             if (parsed.Mode != 16)
             {
-                ApplyVorbis(root, streams, metaPath, metaSource, streamSource, bank, parsed, files, titles, artists, sampleIndexes, inPlaylist);
+                ApplyVorbis(root, streams, metaPath, metaSource, streamSource, bank, parsed, files, titles, artists, sampleIndexes, inPlaylist, progress);
                 return;
             }
             int[]? map = null;
@@ -256,6 +253,8 @@ namespace Heat5Music
                     throw new InvalidOperationException("Missing file: " + mp3);
                 }
 
+                var shown = i < titles.Count && !string.IsNullOrWhiteSpace(titles[i]) ? titles[i].Trim() : "song " + (i + 1);
+                progress?.Invoke("Encoding " + shown);
                 var pcm = ReadPcm(mp3);
                 var sample = paired[i];
                 if (sample < 0)
@@ -265,6 +264,10 @@ namespace Heat5Music
 
                 counts[sample] = pcm.Length / 2;
                 pieces[sample] = FadpcmCodec.EncodeStereo(pcm);
+            }
+
+            for (var i = 0; i < files.Count; i++)
+            {
                 if (i < titles.Count)
                 {
                     newTitles[i] = titles[i];
@@ -288,10 +291,11 @@ namespace Heat5Music
                 }
             }
 
+            progress?.Invoke("Saving the music bank");
             MusicMeta.FitLengths(meta, streamSource, counts, exact);
             Save(rebuilt, streams);
             Save(meta, metaPath);
-            AddChosenSongs(root, files, titles, artists, paired, inPlaylist);
+            AddChosenSongs(root, files, titles, artists, paired, inPlaylist, progress);
             ReleaseSkippedSong(root);
         }
 
@@ -311,7 +315,7 @@ namespace Heat5Music
             return Pair(rows, sampleCount, map);
         }
 
-        private static void ApplyVorbis(string root, string streams, string metaPath, string metaBak, string streamSource, byte[] bank, ParsedBank parsed, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, IReadOnlyList<int>? sampleIndexes, IReadOnlyList<bool>? inPlaylist)
+        private static void ApplyVorbis(string root, string streams, string metaPath, string metaBak, string streamSource, byte[] bank, ParsedBank parsed, IReadOnlyList<string?> files, IReadOnlyList<string> titles, IReadOnlyList<string> artists, IReadOnlyList<int>? sampleIndexes, IReadOnlyList<bool>? inPlaylist, Action<string>? progress)
         {
             var count = parsed.Samples.Count;
             int[]? map = null;
@@ -363,6 +367,7 @@ namespace Heat5Music
                 }
             }
 
+            progress?.Invoke("Reading the current songs");
             var kept = keep.Count == 0
                 ? Array.Empty<short[]>()
                 : FmodPcm.ReadAll(root, bank, parsed.FsbAt, fsbLength, keep.ToArray(), keepRates.ToArray());
@@ -370,6 +375,16 @@ namespace Heat5Music
             for (var i = 0; i < count; i++)
             {
                 var mp3 = fileForSample[i];
+                if (string.IsNullOrWhiteSpace(mp3))
+                {
+                    progress?.Invoke("Converting song " + (i + 1) + " of " + count);
+                }
+                else
+                {
+                    var shown = i < titles.Count && !string.IsNullOrWhiteSpace(titles[i]) ? titles[i].Trim() : "song " + (i + 1);
+                    progress?.Invoke("Encoding " + shown);
+                }
+
                 var pcm = string.IsNullOrWhiteSpace(mp3) ? kept[keptAt++] : ReadPcm(mp3!);
                 counts[i] = pcm.Length / 2;
                 pieces[i] = FadpcmCodec.EncodeStereo(pcm);
@@ -378,36 +393,14 @@ namespace Heat5Music
             }
 
             var events = MusicMeta.Read(metaBak);
-            int[]? eventMap = null;
-            try
-            {
-                eventMap = MusicMeta.SampleMap(metaBak, streamSource);
-            }
-            catch (Exception)
-            {
-            }
-
-            var mapOk = eventMap != null && eventMap.Length == events.Count;
-            if (mapOk)
-            {
-                for (var i = 0; i < eventMap!.Length; i++)
-                {
-                    if (eventMap[i] < 0 || eventMap[i] >= count)
-                    {
-                        mapOk = false;
-                        break;
-                    }
-                }
-            }
-
             var newTitles = new string?[Math.Max(files.Count, events.Count)];
             var newArtists = new string?[newTitles.Length];
-            for (var i = 0; i < events.Count; i++)
+            for (var i = 0; i < events.Count && i < titles.Count; i++)
             {
-                var sample = mapOk ? eventMap![i] : (i < count ? i : -1);
-                if (sample >= 0)
+                newTitles[i] = titles[i];
+                if (i < artists.Count)
                 {
-                    newTitles[i] = names[sample];
+                    newArtists[i] = artists[i];
                 }
             }
 
@@ -421,10 +414,11 @@ namespace Heat5Music
                 exact[i] = true;
             }
 
+            progress?.Invoke("Saving the music bank");
             MusicMeta.FitLengths(meta, streamSource, counts, exact);
             Save(rebuilt, streams);
             Save(meta, metaPath);
-            AddChosenSongs(root, files, titles, artists, paired, inPlaylist);
+            AddChosenSongs(root, files, titles, artists, paired, inPlaylist, progress);
             ReleaseSkippedSong(root);
         }
 
@@ -549,6 +543,39 @@ namespace Heat5Music
             {
                 Save(File.ReadAllBytes(stringsBak), strings);
             }
+        }
+
+        static void SaveShownNames(string root, IReadOnlyList<string> titles, IReadOnlyList<string> artists, Action<string>? progress)
+        {
+            progress?.Invoke("Saving titles");
+            var metaPath = MetaPath(root);
+            if (!File.Exists(metaPath))
+            {
+                throw new InvalidOperationException("Music bank was not found in that Heat 5 folder.");
+            }
+
+            var streams = StreamsPath(root);
+            var bak = BackupOf(streams);
+            var metaBak = BackupOf(metaPath);
+            if (!File.Exists(bak) && File.Exists(streams))
+            {
+                File.Copy(streams, bak, false);
+            }
+
+            if (!File.Exists(metaBak))
+            {
+                File.Copy(metaPath, metaBak, false);
+            }
+
+            var slots = new string?[titles.Count];
+            var artistSlots = new string?[titles.Count];
+            for (var i = 0; i < titles.Count; i++)
+            {
+                slots[i] = titles[i] ?? "";
+                artistSlots[i] = i < artists.Count ? artists[i] ?? "" : "";
+            }
+
+            Save(MusicMeta.Rewrite(File.ReadAllBytes(metaPath), slots, artistSlots), metaPath);
         }
 
         static bool Repair(string root)
