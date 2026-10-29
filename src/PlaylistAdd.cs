@@ -595,6 +595,343 @@ namespace Heat5Music
             Save(meta, metaPath);
         }
 
+        public static int UnusedSampleCount(string root)
+        {
+            return UnusedIndexes(root).Count;
+        }
+
+        internal static void RemoveUnreferencedSamples(string root)
+        {
+            var drop = UnusedIndexes(root);
+            if (drop.Count == 0)
+            {
+                return;
+            }
+
+            var path = StreamsPath(root);
+            var streams = File.ReadAllBytes(path);
+            var waves = WaveChunks(streams);
+            var parsed = Parse(streams);
+            if (waves.Count != parsed.Samples.Count)
+            {
+                throw new InvalidOperationException("That song could not be removed.");
+            }
+
+            var cuts = new List<int>();
+            var spans = new List<int>();
+            var hashes = 0;
+            foreach (var index in drop)
+            {
+                if (index < 0 || index >= waves.Count)
+                {
+                    throw new InvalidOperationException("That song could not be removed.");
+                }
+
+                var wave = waves[index];
+                cuts.Add(wave.At);
+                spans.Add(SpanOf(wave));
+                if (wave.Size >= 16)
+                {
+                    var guid = new byte[16];
+                    Buffer.BlockCopy(streams, wave.Payload, guid, 0, 16);
+                    var hashAt = HashRecord(streams, guid);
+                    if (hashAt >= 0)
+                    {
+                        cuts.Add(hashAt);
+                        spans.Add(20);
+                        hashes++;
+                    }
+                }
+            }
+
+            for (var n = 0; n < drop.Count; n++)
+            {
+                DropCount(streams, "WAVS");
+            }
+
+            for (var n = 0; n < hashes; n++)
+            {
+                DropHashCount(streams);
+            }
+
+            for (var i = 0; i < cuts.Count; i++)
+            {
+                var best = i;
+                for (var j = i + 1; j < cuts.Count; j++)
+                {
+                    if (cuts[j] > cuts[best])
+                    {
+                        best = j;
+                    }
+                }
+
+                var swapAt = cuts[i];
+                var swapSpan = spans[i];
+                cuts[i] = cuts[best];
+                spans[i] = spans[best];
+                cuts[best] = swapAt;
+                spans[best] = swapSpan;
+            }
+
+            for (var i = 0; i < cuts.Count; i++)
+            {
+                streams = CutRange(streams, cuts[i], spans[i]);
+            }
+
+            FixFsbOffset(streams);
+            parsed = Parse(streams);
+            var keep = new bool[parsed.Samples.Count];
+            for (var i = 0; i < keep.Length; i++)
+            {
+                keep[i] = true;
+            }
+
+            foreach (var index in drop)
+            {
+                if (index < 0 || index >= keep.Length)
+                {
+                    throw new InvalidOperationException("That song could not be removed.");
+                }
+
+                keep[index] = false;
+            }
+
+            var rebuilt = SpliceFsb(streams, parsed, OmitSamples(streams, parsed, keep));
+            Parse(rebuilt);
+            Save(rebuilt, path);
+            FixWaveIndexes(path);
+        }
+
+        static List<int> UnusedIndexes(string root)
+        {
+            var result = new List<int>();
+            var streamsPath = StreamsPath(root);
+            var metaPath = MetaPath(root);
+            if (!File.Exists(streamsPath) || !File.Exists(metaPath))
+            {
+                return result;
+            }
+
+            int[] map;
+            try
+            {
+                map = MusicMeta.SampleMap(metaPath, streamsPath);
+            }
+            catch (Exception)
+            {
+                return result;
+            }
+
+            if (map.Length == 0)
+            {
+                return result;
+            }
+
+            ParsedBank parsed;
+            try
+            {
+                using var file = File.OpenRead(streamsPath);
+                var take = (int)Math.Min(file.Length, 1024 * 1024);
+                var header = new byte[take];
+                var got = file.Read(header, 0, header.Length);
+                if (got != header.Length)
+                {
+                    Array.Resize(ref header, got);
+                }
+
+                parsed = Parse(header, file.Length);
+            }
+            catch (Exception)
+            {
+                return result;
+            }
+
+            var used = new bool[parsed.Samples.Count];
+            var referenced = 0;
+            for (var i = 0; i < map.Length; i++)
+            {
+                var sample = map[i];
+                if (sample < 0 || sample >= used.Length)
+                {
+                    continue;
+                }
+
+                if (!used[sample])
+                {
+                    referenced++;
+                }
+
+                used[sample] = true;
+            }
+
+            if (referenced == 0)
+            {
+                return result;
+            }
+
+            var original = ReadOriginal(root);
+            var keepThrough = original == null ? 0 : original.Count;
+            for (var i = keepThrough; i < used.Length; i++)
+            {
+                if (!used[i])
+                {
+                    result.Add(i);
+                }
+            }
+
+            return result;
+        }
+
+        static List<ChunkRef> WaveChunks(byte[] streams)
+        {
+            var waves = new List<ChunkRef>();
+            foreach (var chunk in ListChunks(streams))
+            {
+                if (chunk.Id == "WAV ")
+                {
+                    waves.Add(chunk);
+                }
+            }
+
+            return waves;
+        }
+
+        static void FixFsbOffset(byte[] bank)
+        {
+            var sound = IndexOf(bank, Encoding.ASCII.GetBytes("FSB5"));
+            var header = FindId(bank, "SNDH");
+            if (sound <= 0 || header == null || header.Value.Size < 8)
+            {
+                return;
+            }
+
+            var field = header.Value.Payload + 4;
+            if (field + 4 <= bank.Length)
+            {
+                BitConverter.GetBytes(sound).CopyTo(bank, field);
+            }
+        }
+
+        static byte[] OmitSamples(byte[] bank, ParsedBank parsed, bool[] keep)
+        {
+            var kept = new List<int>();
+            for (var i = 0; i < parsed.Samples.Count && i < keep.Length; i++)
+            {
+                if (keep[i])
+                {
+                    kept.Add(i);
+                }
+            }
+
+            if (kept.Count == 0 || kept.Count == parsed.Samples.Count)
+            {
+                throw new InvalidOperationException("That song could not be removed.");
+            }
+
+            var headerEnd = parsed.FsbAt + HeaderBytes + parsed.SampleHeaderSize;
+            var blobs = new byte[kept.Count][];
+            var pieces = new byte[kept.Count][];
+            var names = new string[kept.Count];
+            var headerBytes = 0;
+            for (var n = 0; n < kept.Count; n++)
+            {
+                var slot = parsed.Samples[kept[n]];
+                var span = SampleHeaderBytes(bank, slot.HeaderAt, headerEnd);
+                blobs[n] = new byte[span];
+                Buffer.BlockCopy(bank, slot.HeaderAt, blobs[n], 0, span);
+                headerBytes += span;
+                if (slot.Length <= 0 || (slot.Length & 31) != 0)
+                {
+                    throw new InvalidOperationException("That song could not be removed.");
+                }
+
+                pieces[n] = new byte[slot.Length];
+                Buffer.BlockCopy(bank, slot.DataAt, pieces[n], 0, slot.Length);
+                names[n] = slot.Name ?? "";
+            }
+
+            var text = new List<byte>();
+            var offsets = new int[kept.Count];
+            for (var i = 0; i < kept.Count; i++)
+            {
+                offsets[i] = kept.Count * 4 + text.Count;
+                text.AddRange(Encoding.UTF8.GetBytes(names[i]));
+                text.Add(0);
+            }
+
+            var nameBytes = new byte[kept.Count * 4 + text.Count];
+            for (var i = 0; i < kept.Count; i++)
+            {
+                BitConverter.GetBytes(offsets[i]).CopyTo(nameBytes, i * 4);
+            }
+
+            text.CopyTo(nameBytes, kept.Count * 4);
+            var headerSize = headerBytes;
+            var tail = (HeaderBytes + headerSize + nameBytes.Length) & 15;
+            if (tail != 0)
+            {
+                headerSize += 16 - tail;
+            }
+
+            var dataSize = 0;
+            for (var i = 0; i < pieces.Length; i++)
+            {
+                dataSize += pieces[i].Length;
+            }
+
+            var fsb = new byte[HeaderBytes + headerSize + nameBytes.Length + dataSize];
+            Buffer.BlockCopy(bank, parsed.FsbAt, fsb, 0, HeaderBytes);
+            BitConverter.GetBytes(kept.Count).CopyTo(fsb, 8);
+            BitConverter.GetBytes(headerSize).CopyTo(fsb, 12);
+            BitConverter.GetBytes(nameBytes.Length).CopyTo(fsb, 16);
+            BitConverter.GetBytes(dataSize).CopyTo(fsb, 20);
+            var cursor = HeaderBytes;
+            var dataCursor = 0;
+            for (var i = 0; i < kept.Count; i++)
+            {
+                var raw = BitConverter.ToUInt64(blobs[i], 0);
+                raw &= ~(0x07FFFFFFUL << 7);
+                raw |= ((ulong)(dataCursor >> 5) & 0x07FFFFFFUL) << 7;
+                BitConverter.GetBytes(raw).CopyTo(blobs[i], 0);
+                Buffer.BlockCopy(blobs[i], 0, fsb, cursor, blobs[i].Length);
+                cursor += blobs[i].Length;
+                Buffer.BlockCopy(pieces[i], 0, fsb, HeaderBytes + headerSize + nameBytes.Length + dataCursor, pieces[i].Length);
+                dataCursor += pieces[i].Length;
+            }
+
+            Buffer.BlockCopy(nameBytes, 0, fsb, HeaderBytes + headerSize, nameBytes.Length);
+            return fsb;
+        }
+
+        static int SampleHeaderBytes(byte[] bank, int at, int limit)
+        {
+            if (at < 0 || at + 8 > bank.Length || at + 8 > limit)
+            {
+                throw new InvalidOperationException("That song could not be removed.");
+            }
+
+            var next = (BitConverter.ToUInt64(bank, at) & 1) != 0;
+            var p = at + 8;
+            while (next)
+            {
+                if (p + 4 > bank.Length || p + 4 > limit)
+                {
+                    throw new InvalidOperationException("That song could not be removed.");
+                }
+
+                var flag = BitConverter.ToUInt32(bank, p);
+                next = (flag & 1) != 0;
+                var size = (int)((flag >> 1) & 0xFFFFFF);
+                p += 4 + size;
+                if (p > bank.Length || p > limit)
+                {
+                    throw new InvalidOperationException("That song could not be removed.");
+                }
+            }
+
+            return p - at;
+        }
+
         static byte[] GuidBytes(byte[] data, int at)
         {
             var guid = new byte[16];
