@@ -354,7 +354,14 @@ public sealed class MainForm : Form
                 _songs.Items.Add(item);
             }
 
-            SetStatus(Theme.Mute, songs.Count + " songs. The shown title and artist are what Heat displays.");
+            if (MusicBank.UnusedSampleCount(_root) > 0)
+            {
+                SetStatus(Theme.Yellow, "A removed song is still in the music file. Click Apply to delete it.");
+            }
+            else
+            {
+                SetStatus(Theme.Mute, songs.Count + " songs. The shown title and artist are what Heat displays.");
+            }
         }
         catch (Exception ex)
         {
@@ -550,11 +557,11 @@ public sealed class MainForm : Form
 
         if (removed > 0 && restored > 0)
         {
-            SetStatus(Theme.Yellow, "Songs were put back or removed from the list. Click Apply.");
+            SetStatus(Theme.Yellow, "Songs were put back or will be deleted. Click Apply.");
         }
         else if (removed > 0)
         {
-            SetStatus(Theme.Yellow, removed == 1 ? "That song was removed from the list. Click Apply." : removed + " songs were removed from the list. Click Apply.");
+            SetStatus(Theme.Yellow, removed == 1 ? "That song will be deleted. Click Apply." : removed + " songs will be deleted. Click Apply.");
         }
         else if (restored > 0)
         {
