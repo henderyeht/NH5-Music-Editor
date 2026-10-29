@@ -87,18 +87,12 @@ namespace Heat5Music
             }
 
             var songs = new List<HeatSong>();
-            var used = new bool[sampleCount];
             if (titles.Count > 0)
             {
                 var paired = Pair(titles.Count, sampleCount, map);
                 for (var i = 0; i < titles.Count; i++)
                 {
                     var sample = paired[i];
-                    if (sample >= 0 && sample < used.Length)
-                    {
-                        used[sample] = true;
-                    }
-
                     var title = titles[i].Title;
                     songs.Add(new HeatSong
                     {
@@ -116,7 +110,6 @@ namespace Heat5Music
             {
                 for (var i = 0; i < parsed.Samples.Count; i++)
                 {
-                    used[i] = true;
                     var name = parsed.Samples[i].Name;
                     songs.Add(new HeatSong
                     {
@@ -126,29 +119,6 @@ namespace Heat5Music
                         Artist = "",
                         Samples = parsed.Samples[i].Samples,
                         InPlaylist = true,
-                        Custom = i < custom.Length && custom[i]
-                    });
-                }
-            }
-
-            if (parsed != null)
-            {
-                for (var i = 0; i < parsed.Samples.Count; i++)
-                {
-                    if (used[i])
-                    {
-                        continue;
-                    }
-
-                    var name = parsed.Samples[i].Name;
-                    songs.Add(new HeatSong
-                    {
-                        Index = songs.Count,
-                        SampleIndex = i,
-                        Title = string.IsNullOrWhiteSpace(name) ? "Song " + (songs.Count + 1) : name,
-                        Artist = "",
-                        Samples = parsed.Samples[i].Samples,
-                        InPlaylist = false,
                         Custom = i < custom.Length && custom[i]
                     });
                 }
