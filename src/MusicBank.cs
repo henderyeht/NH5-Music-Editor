@@ -190,6 +190,13 @@ namespace Heat5Music
                     RemovePlaylistEvent(root, pending[i]);
                 }
             }
+
+            if (UnusedSampleCount(root) > 0)
+            {
+                progress?.Invoke("Removing a song");
+                RemoveUnreferencedSamples(root);
+            }
+
             var streams = StreamsPath(root);
             if (!File.Exists(streams))
             {
